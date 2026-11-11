@@ -1,0 +1,64 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Postern",
+  "version": "0.2.0",
+  "identifier": "app.postern",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": true,
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "msi"
+    ],
+    "publisher": "Postern contributors",
+    "copyright": "\u00a9 2026 Postern contributors. MIT License.",
+    "category": "Productivity",
+    "shortDescription": "Postern: a light tray companion for Bulwark Mail",
+    "longDescription": "Mail and calendar notifications straight from your Stalwart server, with your Bulwark Mail opened on demand. Unofficial; not affiliated with Bulwark or Stalwart.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "installer/nsis-header.bmp",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "languages": [
+          "English",
+          "German",
+          "French",
+          "Spanish",
+          "Italian",
+          "Dutch",
+          "PortugueseBR",
+          "Turkish",
+          "Polish",
+          "Russian",
+          "Japanese",
+          "SimpChinese"
+        ],
+        "displayLanguageSelector": false
+      },
+      "wix": {
+        "upgradeCode": "0CA6A7EE-C9AF-541F-8A6F-7EF439EBDE61",
+        "bannerPath": "installer/wix-banner.bmp",
+        "dialogImagePath": "installer/wix-dialog.bmp",
+        "language": "en-US"
+      }
+    }
+  }
+}

@@ -1,0 +1,51 @@
+[package]
+name = "postern"
+version = "0.2.0"
+edition = "2021"
+description = "Postern: a light tray companion for Bulwark Mail on Stalwart"
+license = "MIT"
+authors = ["Postern contributors"]
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-opener = "2"
+url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+jmap-client = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "sync", "time", "net", "io-util"] }
+futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] }
+
+[target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "0.7"
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

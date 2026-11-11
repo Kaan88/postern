@@ -1,0 +1,8 @@
+{
+  "productName": "wv2-lifecycle",
+  "version": "0.1.0",
+  "identifier": "dev.test.wv2lifecycle",
+  "build": { "frontendDist": "./dist" },
+  "app": { "windows": [], "security": { "csp": null } },
+  "bundle": { "active": false }
+}

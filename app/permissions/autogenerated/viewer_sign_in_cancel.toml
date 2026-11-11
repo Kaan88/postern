@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-viewer-sign-in-cancel"
+description = "Enables the viewer_sign_in_cancel command without any pre-configured scope."
+commands.allow = ["viewer_sign_in_cancel"]
+
+[[permission]]
+identifier = "deny-viewer-sign-in-cancel"
+description = "Denies the viewer_sign_in_cancel command without any pre-configured scope."
+commands.deny = ["viewer_sign_in_cancel"]

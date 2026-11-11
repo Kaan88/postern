@@ -1,0 +1,68 @@
+# Builds Postern for Windows x64 and ARM64 and publishes a draft GitHub release, laid out
+# like Bulwark Desktop's: installers, a .sha256 per file, and build provenance attestations
+# (check one with: gh attestation verify <file> --repo <owner>/<repo>).
+# Run it by pushing a tag v<version> matching app/tauri.conf.json, or by hand.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Test
+        working-directory: app
+        run: cargo test --locked
+      - name: Build installers
+        run: powershell -File app/scripts/release.ps1 -Arch ${{ matrix.arch }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            app/dist/*/Postern-*.exe
+            app/dist/*/Postern-*.msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: postern-${{ matrix.arch }}
+          path: app/dist/*/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version app/tauri.conf.json)
+          notes="release/v${version}.md"
+          [ -f "$notes" ] || notes=/dev/null
+          gh release create "v${version}" out/* \
+            --draft --title "Postern ${version}" --notes-file "$notes" --target "$GITHUB_SHA"

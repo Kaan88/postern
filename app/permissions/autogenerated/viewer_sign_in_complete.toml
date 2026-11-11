@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-viewer-sign-in-complete"
+description = "Enables the viewer_sign_in_complete command without any pre-configured scope."
+commands.allow = ["viewer_sign_in_complete"]
+
+[[permission]]
+identifier = "deny-viewer-sign-in-complete"
+description = "Denies the viewer_sign_in_complete command without any pre-configured scope."
+commands.deny = ["viewer_sign_in_complete"]

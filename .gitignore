@@ -1,0 +1,13 @@
+# build output
+target/
+app/dist/
+# measurement runs and local scratch from the feasibility work
+experiments/*/target/
+experiments/*/results/
+*.log
+experiments/*/dist
+# Personal server branding and design scratch stay local
+branding/ward/
+branding/make-ward.py
+branding/*.png
+branding/postern-icon-brief.md

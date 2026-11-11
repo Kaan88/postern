@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postern settings</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1f; --muted: #6b6b76; --line: #d9d9e0; --field: #f6f6f9; --accent: #2563eb; --ok: #15803d; --err: #b91c1c; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b20; --fg: #ececf1; --muted: #9a9aa6; --line: #34343c; --field: #24242b; --accent: #5b8cff; --ok: #4ade80; --err: #f87171; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px 24px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  p.lead { margin: 0 0 18px; color: var(--muted); }
+  fieldset { border: 0; padding: 0; margin: 0 0 16px; }
+  legend { font-weight: 600; margin-bottom: 8px; }
+  label { display: block; margin: 10px 0 4px; }
+  input[type=url], input[type=number] {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit;
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+  .check label { margin: 0; }
+  .account { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .account span { overflow-wrap: anywhere; }
+  .row { display: flex; gap: 8px; margin-top: 18px; }
+  button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--fg); font: inherit; cursor: pointer; white-space: nowrap; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .6; cursor: default; }
+  #msg { margin-top: 12px; min-height: 1.4em; }
+  #msg.ok { color: var(--ok); } #msg.err { color: var(--err); }
+</style>
+</head>
+<body>
+<h1>Postern</h1>
+<p class="lead">Watches your Inbox and calendar over JMAP push and opens Bulwark only while you use it.</p>
+<form id="f" autocomplete="off">
+  <fieldset>
+    <legend>Mail server</legend>
+    <label for="jmap_url">Stalwart URL</label>
+    <input id="jmap_url" type="url" required placeholder="https://mail.example.com">
+    <div class="hint">The server that answers /.well-known/jmap.</div>
+    <div class="account">
+      <span id="account">Not signed in</span>
+      <button type="button" id="signin" class="primary">Sign in</button>
+      <button type="button" id="signout" hidden>Sign out</button>
+    </div>
+    <div class="hint">Opens your browser to sign in on the server itself (OAuth). No password is stored here; only a renewable token, in the Windows keyring.</div>
+  </fieldset>
+  <fieldset>
+    <legend>Viewer</legend>
+    <label for="viewer_url">Bulwark URL</label>
+    <input id="viewer_url" type="url" required placeholder="https://webmail.example.com">
+    <div class="hint">Your hosted Bulwark. Sign in once in the window it opens, with "Remember me" ticked.</div>
+    <label for="keep_viewer_secs">Keep the window in memory after closing (seconds)</label>
+    <input id="keep_viewer_secs" type="number" min="0" max="3600" step="1">
+    <div class="hint">0 frees all its memory at once; a few minutes makes a quick reopen instant.</div>
+    <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
+    <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
+    <div class="hint">Sent by the mail server itself, so they arrive with Bulwark closed. Needs calendar alarms enabled on Stalwart.</div>
+  </fieldset>
+  <div class="row">
+    <button type="submit">Save</button>
+  </div>
+  <div id="msg" role="status" aria-live="polite"></div>
+</form>
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const $ = (id) => document.getElementById(id);
+  const msg = (text, kind) => { $("msg").textContent = text; $("msg").className = kind || ""; };
+  const read = () => ({
+    settings: {
+      jmap_url: $("jmap_url").value.trim(),
+      viewer_url: $("viewer_url").value.trim(),
+      notifications: $("notifications").checked,
+      calendar_alerts: $("calendar_alerts").checked,
+      keep_viewer_secs: Math.max(0, parseInt($("keep_viewer_secs").value || "0", 10)),
+    },
+  });
+  const showAccount = (signedIn, username) => {
+    $("account").textContent = signedIn ? `Signed in${username ? " as " + username : ""}` : "Not signed in";
+    $("signin").hidden = signedIn;
+    $("signout").hidden = !signedIn;
+  };
+  const load = () => invoke("get_settings").then(({ config, signed_in }) => {
+    for (const k of ["jmap_url", "viewer_url", "keep_viewer_secs"]) $(k).value = config[k] ?? "";
+    $("notifications").checked = !!config.notifications;
+    $("calendar_alerts").checked = !!config.calendar_alerts;
+    showAccount(signed_in, config.username);
+  }).catch((e) => msg(String(e), "err"));
+  load();
+  const valid = () => $("f").reportValidity();
+  $("signin").addEventListener("click", async () => {
+    if (!valid()) return;
+    $("signin").disabled = true;
+    msg("Continue in your browser…");
+    try {
+      msg(await invoke("sign_in", read()), "ok");
+      await load();
+    } catch (e) { msg(String(e), "err"); }
+    $("signin").disabled = false;
+  });
+  $("signout").addEventListener("click", async () => {
+    try { await invoke("sign_out"); await load(); msg("Signed out. The token was revoked on the server.", "ok"); }
+    catch (e) { msg(String(e), "err"); }
+  });
+  $("f").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try { await invoke("save_settings", read()); await load(); msg("Saved.", "ok"); }
+    catch (e) { msg(String(e), "err"); }
+  });
+</script>
+</body>
+</html>
