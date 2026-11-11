@@ -80,6 +80,10 @@ powershell -File app/scripts/release.ps1
 
 Technical notes are in [app/README.md](app/README.md), and the design background is in [FEASIBILITY.md](FEASIBILITY.md).
 
+## Audit
+
+Postern 0.2.0 was reviewed before release by Fable (Anthropic's Claude Fable 5.2): two passes covering correctness, security, reliability and performance. Every finding was fixed or is listed as a known limitation in the [technical notes](app/README.md).
+
 ## License
 
 MIT. Postern contains no code from Bulwark or Stalwart. It talks to them over their public protocols and interfaces (JMAP, OAuth, and Bulwark's documented desktop sign-in bridge). It uses Stalwart Labs' `jmap-client` crate (Apache-2.0 or MIT) and Tauri (Apache-2.0 or MIT).
