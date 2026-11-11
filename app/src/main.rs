@@ -119,7 +119,10 @@ fn store(app: &AppHandle, config: config::Config) -> Result<(), String> {
         // Its navigation rules and bridge are tied to the old origin: rebuild on next open.
         viewer::destroy(app);
     }
-    state.restart.notify_one();
+    // Only another account needs a new connection; the toggles are read live.
+    if old.jmap_url.trim() != config.jmap_url.trim() || old.oauth_client_id != config.oauth_client_id {
+        state.restart.notify_one();
+    }
     Ok(())
 }
 
@@ -138,6 +141,7 @@ async fn sign_in(app: AppHandle, settings: SettingsInput) -> Result<String, Stri
     // The browser step can take minutes: keep whatever was saved meanwhile, add only the sign-in.
     let mut next = app.state::<AppState>().config.lock().unwrap().clone();
     if next.jmap_url.trim() != signing.jmap_url.trim() {
+        auth::discard(&app).await;
         return Err("The mail server URL changed during the sign-in. Sign in again.".into());
     }
     next.oauth_client_id = signing.oauth_client_id;
@@ -146,7 +150,12 @@ async fn sign_in(app: AppHandle, settings: SettingsInput) -> Result<String, Stri
     if !signed.username.is_empty() {
         next.username = signed.username;
     }
-    store(&app, next.clone())?;
+    if let Err(e) = store(&app, next.clone()) {
+        auth::discard(&app).await;
+        return Err(e);
+    }
+    // Also after signing in again to the same account (e.g. from "Sign-in failed").
+    app.state::<AppState>().restart.notify_one();
     let who = if next.username.is_empty() { String::new() } else { format!(" as {}", next.username) };
     // Signed in from here on: a failed check is reported, not turned into a sign-in error.
     let check = async {

@@ -3,5 +3,5 @@
   "identifier": "settings",
   "description": "The local settings window. The Bulwark viewer gets no IPC access at all.",
   "windows": ["settings"],
-  "permissions": ["core:default", "allow-get-settings", "allow-save-settings", "allow-sign-in", "allow-sign-out"]
+  "permissions": ["allow-get-settings", "allow-save-settings", "allow-sign-in", "allow-sign-out"]
 }

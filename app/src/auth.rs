@@ -117,7 +117,8 @@ pub fn secure_url(s: &str) -> Result<Url, String> {
     }
 }
 
-fn server_base(jmap_url: &str) -> Result<Url, String> {
+/// `scheme://host[:port]/` of the mail server, whatever path the configured URL has.
+pub fn server_base(jmap_url: &str) -> Result<Url, String> {
     let url = Url::parse(jmap_url.trim()).map_err(|e| format!("Mail server URL: {e}"))?;
     let host = url.host_str().ok_or("Mail server URL has no host")?;
     let mut base = format!("{}://{}", url.scheme(), host);
@@ -205,7 +206,8 @@ fn keep(token: &TokenResponse) -> AccessToken {
     // Renew a minute early, and never trust a lifetime under two minutes for longer than half of it.
     // A lifetime under 30 s (or 0) is taken as 30 s: otherwise renewal would loop. If the token
     // really dies sooner, the server's 401 drops it (watcher::is_auth_error).
-    let life = token.expires_in.unwrap_or(3600).max(30);
+    // Capped at a day: a huge value must not overflow the Instant below.
+    let life = token.expires_in.unwrap_or(3600).clamp(30, 86_400);
     let margin = if life > 120 { 60 } else { life / 2 };
     AccessToken { token: token.access_token.clone(), renew_at: Instant::now() + Duration::from_secs(life - margin) }
 }
@@ -406,7 +408,16 @@ pub fn is_signed_in(cfg: &config::Config) -> bool {
 }
 
 /// A valid access token, refreshing (and rotating the stored refresh token) when needed.
+/// The refresh runs as its own task: if the caller gives up half-way (the watcher restarts),
+/// a token the server has already rotated is still stored instead of being lost.
 pub async fn access_token(app: &AppHandle) -> Result<AccessToken, AuthError> {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move { refresh_or_cached(&app).await })
+        .await
+        .unwrap_or_else(|e| Err(AuthError::Temporary(format!("token task: {e}"))))
+}
+
+async fn refresh_or_cached(app: &AppHandle) -> Result<AccessToken, AuthError> {
     let state = app.state::<AppState>();
     let mut cached = state.token.lock().await; // held across the refresh: one rotation at a time
     if let Some(t) = cached.as_ref().filter(|t| Instant::now() < t.renew_at) {
@@ -448,6 +459,13 @@ pub async fn access_token(app: &AppHandle) -> Result<AccessToken, AuthError> {
     }
     crate::log("access token renewed");
     Ok(t)
+}
+
+/// Forgets the grant locally without telling the server (a sign-in that can't be kept).
+pub async fn discard(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let mut cached = state.token.lock().await;
+    forget(&mut cached);
 }
 
 /// Revokes the refresh token on the server (best effort) and forgets everything locally.

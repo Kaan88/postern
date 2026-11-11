@@ -84,8 +84,11 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
+    // A name of its own per write, so two writers never share (or truncate) one temp file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
+    tmp.push(format!(".{}-{n}.tmp", std::process::id()));
     let tmp = PathBuf::from(tmp);
     {
         let mut f = fs::File::create(&tmp)?;
@@ -103,7 +106,8 @@ pub fn save(app: &AppHandle, config: &Config) -> Result<(), String> {
 
 /// Carries a 0.1.x ("Bulwark Tray") install over to Postern, once: its config.json from the
 /// old app-config folder and, with it, its OAuth refresh token from the old keyring service
-/// (copied, not moved, so the old version still works if Postern is removed). Nothing is
+/// (copied, not moved; but tokens rotate, so after Postern's first refresh the old version
+/// needs to sign in again). Nothing is
 /// migrated if Postern already has its own settings: a token only makes sense next to the
 /// client id in the config it came with. The Bulwark window's cookies (a separate WebView
 /// profile) don't move: one "Sign in with your browser" brings them back.

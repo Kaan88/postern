@@ -1,7 +1,7 @@
 # Builds Postern for Windows x64 and ARM64 and publishes a draft GitHub release, laid out
 # like Bulwark Desktop's: installers, a .sha256 per file, and build provenance attestations
 # (check one with: gh attestation verify <file> --repo <owner>/<repo>).
-# Run it by pushing a tag v<version> matching app/tauri.conf.json, or by hand.
+# Run it by pushing a tag v<version> matching app/tauri.conf.json; run by hand, it only builds.
 # Actions are pinned to commit SHAs (the tag each one was at is noted alongside).
 name: release
 
@@ -64,6 +64,8 @@ jobs:
 
   release:
     needs: build
+    # A hand-run build is for testing: only a tag makes a release.
+    if: github.ref_type == 'tag'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -80,7 +82,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(jq -r .version app/tauri.conf.json)
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
             echo "tag $GITHUB_REF_NAME does not match app version $version" >&2; exit 1
           fi
           notes="release/v${version}.md"

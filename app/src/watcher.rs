@@ -20,7 +20,7 @@ use jmap_client::{
     event_source::PushNotification,
     DataType,
 };
-use tauri::{AppHandle, Manager, Url};
+use tauri::{AppHandle, Manager};
 use tokio::sync::Notify;
 
 use crate::{auth, calendar, config, notify, tray, AppState};
@@ -115,7 +115,7 @@ impl Health {
 async fn run(app: AppHandle, restart: Arc<Notify>) {
     let mut health = Health { backoff: FIRST_BACKOFF, auth_failures: 0 };
     // Kept across reconnects, so mail that came in while the connection was down is still toasted.
-    let mut known: Option<HashSet<String>> = None;
+    let mut known: Option<Seen> = None;
     loop {
         let cfg = app.state::<AppState>().config.lock().unwrap().clone();
         if !cfg.is_complete() {
@@ -181,15 +181,23 @@ async fn run(app: AppHandle, restart: Arc<Notify>) {
     }
 }
 
+/// Connects to the server's JMAP session (`<server>/.well-known/jmap`). The bearer token only
+/// goes over https: to the configured server, and to the API and push URLs its session names.
 pub async fn connect(cfg: &config::Config, access_token: &str) -> Result<Client, Failure> {
-    let base = cfg.jmap_url.trim().trim_end_matches('/').to_string();
-    let host = Url::parse(&base).map_err(|e| format!("JMAP URL: {e}"))?.host_str().unwrap_or_default().to_string();
-    Ok(Client::new()
+    let base = auth::server_base(&cfg.jmap_url)?;
+    auth::secure_url(base.as_str()).map_err(|e| format!("Mail server URL {e}"))?;
+    let host = base.host_str().unwrap_or_default().to_string();
+    let client = Client::new()
         .credentials(Credentials::bearer(access_token))
         .timeout(Duration::from_secs(30))
         .follow_redirects([host])
-        .connect(&base)
-        .await?)
+        .connect(base.as_str().trim_end_matches('/'))
+        .await?;
+    let session = client.session();
+    for (what, url) in [("API", session.api_url()), ("push", session.event_source_url())] {
+        auth::secure_url(url).map_err(|e| format!("the server's JMAP {what} URL {e}"))?;
+    }
+    Ok(client)
 }
 
 pub async fn inbox_id(client: &Client) -> Result<String, Failure> {
@@ -208,10 +216,15 @@ pub async fn inbox_unread(client: &Client, inbox: &str) -> Result<usize, Failure
 
 type PushStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = jmap_client::Result<PushNotification>> + Send>>;
 
+/// jmap-client only bounds the connect step, so a server or proxy that accepts the connection
+/// and never answers would otherwise hang the watcher here for good.
+const STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn open_stream(client: &Client) -> Result<PushStream, Failure> {
-    let stream = client
-        .event_source(Some([DataType::Email, DataType::Mailbox, DataType::CalendarAlert]), false, Some(60), None)
-        .await?;
+    let open = client.event_source(Some([DataType::Email, DataType::Mailbox, DataType::CalendarAlert]), false, Some(60), None);
+    let stream = tokio::time::timeout(STREAM_OPEN_TIMEOUT, open)
+        .await
+        .map_err(|_| "the push stream did not open within 30 s".to_string())??;
     Ok(Box::pin(stream))
 }
 
@@ -223,7 +236,7 @@ async fn session(
     cfg: &config::Config,
     mut token: auth::AccessToken,
     health: &mut Health,
-    known: &mut Option<HashSet<String>>,
+    known: &mut Option<Seen>,
 ) -> Result<std::convert::Infallible, Failure> {
     let client = connect(cfg, &token.token).await?;
     let has_calendars = client.session().capabilities().any(|c| c == "urn:ietf:params:jmap:calendars");
@@ -232,7 +245,7 @@ async fn session(
     // Only a successful first look decides what counts as already seen; a failed one must not
     // leave an empty set behind that would make every unread mail look new next time.
     let mut first = known.clone().unwrap_or_default();
-    refresh(app, cfg, &client, &inbox, &mut first, known.is_none()).await?;
+    refresh(app, &client, &inbox, &mut first, known.is_none()).await?;
     let known = known.insert(first);
 
     let mut client = client;
@@ -240,7 +253,7 @@ async fn session(
     crate::log("push stream armed (Email, Mailbox, CalendarAlert)");
     health.ok();
     // Anything that changed between the first look and the stream.
-    refresh(app, cfg, &client, &inbox, known, false).await?;
+    refresh(app, &client, &inbox, known, false).await?;
 
     loop {
         let next = tokio::select! {
@@ -252,7 +265,7 @@ async fn session(
                 stream = fresh_stream;
                 client = fresh;
                 crate::log("access token renewed: push stream re-armed");
-                refresh(app, cfg, &client, &inbox, known, false).await?;
+                refresh(app, &client, &inbox, known, false).await?;
                 continue;
             }
         };
@@ -260,9 +273,13 @@ async fn session(
             Err(_) => {
                 crate::log("push stream quiet for 5 min: re-arming");
                 stream = open_stream(&client).await?;
-                refresh(app, cfg, &client, &inbox, known, false).await?;
+                refresh(app, &client, &inbox, known, false).await?;
             }
             Ok(None) => return Err("push stream closed".to_string().into()),
+            // A comment line or an unknown event the parser can't read: skip it, keep the stream.
+            Ok(Some(Err(e @ (jmap_client::Error::Parse(_) | jmap_client::Error::Internal(_))))) => {
+                crate::log(&format!("push stream: skipped an unreadable event ({e})"));
+            }
             Ok(Some(Err(e))) => return Err(e.into()),
             Ok(Some(Ok(PushNotification::StateChange(changes)))) => {
                 let types: Vec<String> = changes
@@ -272,14 +289,14 @@ async fn session(
                 crate::log(&format!("state change: {}", types.join(", ")));
                 // Let a burst of changes (a delivery touches Email and Mailbox) settle.
                 tokio::time::sleep(Duration::from_millis(300)).await;
-                refresh(app, cfg, &client, &inbox, known, false).await?;
+                refresh(app, &client, &inbox, known, false).await?;
             }
             Ok(Some(Ok(PushNotification::CalendarAlert(alert)))) => {
                 crate::log(&format!(
                     "calendar alert: event {} alert {} recurrence {:?}",
                     alert.calendar_event_id, alert.alert_id, alert.recurrence_id
                 ));
-                if cfg.calendar_alerts {
+                if wants(app).1 {
                     match calendar::fetch(&client, &alert).await {
                         Ok(item) => {
                             crate::log(&format!("  -> {}", if item.is_task { "task" } else { "event" }));
@@ -293,14 +310,36 @@ async fn session(
     }
 }
 
-async fn refresh(
-    app: &AppHandle,
-    cfg: &config::Config,
-    client: &Client,
-    inbox: &str,
-    known: &mut HashSet<String>,
-    seed: bool,
-) -> Result<(), Failure> {
+/// What has been looked at already: the unread ids seen, and the newest arrival time among
+/// them. Only mail that arrived at or after that time counts as new, so older unread mail
+/// moving into the "newest 20" window (after you read some) is not mistaken for new.
+#[derive(Clone, Default)]
+pub struct Seen {
+    ids: HashSet<String>,
+    newest: Option<i64>,
+}
+
+impl Seen {
+    fn remember(&mut self, ids: Vec<String>) {
+        if self.ids.len() > 1000 {
+            self.ids.clear(); // `newest` still keeps old mail from looking new
+        }
+        self.ids.extend(ids);
+    }
+
+    fn arrived(&mut self, t: i64) {
+        self.newest = Some(self.newest.map_or(t, |n| n.max(t)));
+    }
+}
+
+/// The two toggles, read when needed, so changing them doesn't restart the connection.
+fn wants(app: &AppHandle) -> (bool, bool) {
+    let state = app.state::<AppState>();
+    let cfg = state.config.lock().unwrap();
+    (cfg.notifications, cfg.calendar_alerts)
+}
+
+async fn refresh(app: &AppHandle, client: &Client, inbox: &str, seen: &mut Seen, seed: bool) -> Result<(), Failure> {
     let unread = inbox_unread(client, inbox).await?;
     tray::set_status(app, &Status::Online { unread });
 
@@ -313,13 +352,23 @@ async fn refresh(
         .sort([email::query::Comparator::received_at().descending()])
         .limit(20);
     let ids = req.send_single::<QueryResponse>().await?.take_ids();
+    let fresh: Vec<String> = ids.iter().filter(|id| !seen.ids.contains(*id)).cloned().collect();
 
-    let fresh: Vec<String> = ids.iter().filter(|id| !known.contains(*id)).cloned().collect();
-    if known.len() > 1000 {
-        known.clear();
+    if seed {
+        // The newest unread mail sets the bar; nothing already there is toasted.
+        if let Some(first) = ids.first() {
+            let mut req = client.build();
+            req.get_email().ids([first.as_str()]).properties([email::Property::Id, email::Property::ReceivedAt]);
+            let list = req.send_single::<EmailGetResponse>().await?.take_list();
+            if let Some(t) = list.first().and_then(|e| e.received_at()) {
+                seen.arrived(t);
+            }
+        }
+        seen.remember(ids);
+        return Ok(());
     }
-    known.extend(ids);
-    if seed || fresh.is_empty() || !cfg.notifications {
+    if fresh.is_empty() || !wants(app).0 {
+        seen.remember(ids);
         return Ok(());
     }
 
@@ -332,8 +381,17 @@ async fn refresh(
         email::Property::ReceivedAt,
     ]);
     let mut emails = req.send_single::<EmailGetResponse>().await?.take_list();
+    // Only now are they "seen": if the lookup above failed, the next refresh tries them again.
+    seen.remember(ids);
+    let bar = seen.newest;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    emails.retain(|e| e.received_at().map(|t| now - t <= NOTIFY_MAX_AGE_SECS).unwrap_or(true));
+    emails.retain(|e| match e.received_at() {
+        Some(t) => now - t <= NOTIFY_MAX_AGE_SECS && bar.is_none_or(|b| t >= b),
+        None => bar.is_none(),
+    });
+    for t in emails.iter().filter_map(|e| e.received_at()) {
+        seen.arrived(t);
+    }
     emails.sort_by_key(|e| std::cmp::Reverse(e.received_at().unwrap_or(0)));
 
     for e in emails.iter().take(MAX_TOASTS_PER_BURST) {

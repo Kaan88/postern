@@ -72,6 +72,7 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
 
     let url = target_url(app, path)?;
     let bulwark = url.origin();
+    let popup_origin = bulwark.clone();
     // The mail server too: Bulwark's own "Sign in with Stalwart" may run in the window.
     let server = Url::parse(app.state::<AppState>().config.lock().unwrap().jmap_url.trim()).ok().map(|u| u.origin());
     crate::viewer_auth::grant(app);
@@ -85,12 +86,14 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
             open_outside(to);
             false
         })
-        .on_new_window(|to, _features| {
-            if matches!(to.scheme(), "http" | "https") {
-                open_outside(&to);
-                return NewWindowResponse::Deny;
+        .on_new_window(move |to, _features| {
+            // Bulwark's own blob: pages (attachments, print previews) may open; web links go
+            // to the browser; anything else (about:, data:, javascript:) is refused.
+            if to.scheme() == "blob" && to.origin() == popup_origin {
+                return NewWindowResponse::Allow;
             }
-            NewWindowResponse::Allow // blob: and the like (attachments, print previews)
+            open_outside(&to);
+            NewWindowResponse::Deny
         })
         // Files dropped on the window go to Bulwark's own drop zones (attachments), not to Tauri.
         .disable_drag_drop_handler()
