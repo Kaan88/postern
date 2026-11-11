@@ -156,6 +156,7 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             config::migrate_legacy(&handle);
+            notify::register(&handle);
             let cfg = config::load(&handle);
             let complete = cfg.is_complete() && auth::is_signed_in(&cfg) && !cfg.viewer_url.trim().is_empty();
             let restart = Arc::new(Notify::new());

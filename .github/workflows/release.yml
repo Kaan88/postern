@@ -64,5 +64,5 @@ jobs:
           version=$(jq -r .version app/tauri.conf.json)
           notes="release/v${version}.md"
           [ -f "$notes" ] || notes=/dev/null
-          gh release create "v${version}" out/* \
+          gh release create "v${version}" out/*/* \
             --draft --title "Postern ${version}" --notes-file "$notes" --target "$GITHUB_SHA"

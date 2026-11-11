@@ -63,22 +63,59 @@ fn show(app: &AppHandle, title: &str, line1: &str, line2: &str, target: Option<T
     });
 }
 
-/// Toasts need an AppUserModelID that Windows knows. The installer's Start Menu shortcut
-/// registers ours (the bundle identifier); without it (a plain `cargo run`), borrow PowerShell's.
+/// Set by `register` once Windows knows our AppUserModelID with a name and icon.
+#[cfg(windows)]
+static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Registers the bundle identifier as an AppUserModelID under HKCU, with a display name and
+/// an icon file, so toasts show Postern's name and icon. A Start Menu shortcut alone gives
+/// toasts the ID but not reliably the icon. Call once at startup.
+#[cfg(windows)]
+pub fn register(app: &AppHandle) {
+    use tauri::Manager;
+    let ok = (|| -> std::io::Result<()> {
+        let dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
+        std::fs::create_dir_all(&dir)?;
+        let icon = dir.join("toast-icon.png");
+        let png: &[u8] = include_bytes!("../icons/128x128@2x.png");
+        if std::fs::read(&icon).ok().as_deref() != Some(png) {
+            std::fs::write(&icon, png)?;
+        }
+        let key_path = format!(r"Software\Classes\AppUserModelId\{}", app.config().identifier);
+        let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(key_path)?;
+        let name = app.config().product_name.clone().unwrap_or_else(|| app.package_info().name.clone());
+        key.set_value("DisplayName", &name)?;
+        key.set_value("IconUri", &icon.to_string_lossy().to_string())?;
+        key.set_value("IconBackgroundColor", &"FFDB2D54")?;
+        Ok(())
+    })();
+    if let Err(e) = &ok {
+        crate::log(&format!("toast registration failed: {e}"));
+    }
+    let _ = REGISTERED.set(ok.is_ok());
+}
+
+#[cfg(not(windows))]
+pub fn register(_app: &AppHandle) {}
+
+/// Our own ID once registered; failing that, the Start Menu shortcut's; and for a plain
+/// `cargo run` with neither, PowerShell's, which Windows always knows.
 #[cfg(windows)]
 fn windows_app_id(app: &AppHandle) -> String {
     use tauri_winrt_notification::Toast;
     let name = &app.package_info().name;
-    let shortcut_exists = [std::env::var("APPDATA").ok(), std::env::var("ProgramData").ok()]
-        .into_iter()
-        .flatten()
-        .any(|root| {
-            std::path::Path::new(&root)
-                .join(r"Microsoft\Windows\Start Menu\Programs")
-                .join(format!("{name}.lnk"))
-                .exists()
-        });
-    if shortcut_exists {
+    let shortcut_exists = || {
+        [std::env::var("APPDATA").ok(), std::env::var("ProgramData").ok()]
+            .into_iter()
+            .flatten()
+            .any(|root| {
+                std::path::Path::new(&root)
+                    .join(r"Microsoft\Windows\Start Menu\Programs")
+                    .join(format!("{name}.lnk"))
+                    .exists()
+            })
+    };
+    if REGISTERED.get().copied().unwrap_or(false) || shortcut_exists() {
         app.config().identifier.clone()
     } else {
         Toast::POWERSHELL_APP_ID.to_string()
