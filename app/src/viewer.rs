@@ -59,12 +59,27 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
         .title("Bulwark")
         .inner_size(1280.0, 860.0)
         .min_inner_size(480.0, 400.0)
+        .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
+    if crate::window_state::restore(&window) {
+        let _ = window.maximize();
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
 
     let handle = app.clone();
     window.on_window_event(move |event| {
+        if matches!(event, WindowEvent::Moved(_) | WindowEvent::Resized(_)) {
+            if let Some(w) = handle.get_webview_window(LABEL) {
+                crate::window_state::track(&w, false);
+            }
+            return;
+        }
         if let WindowEvent::CloseRequested { api, .. } = event {
+            if let Some(w) = handle.get_webview_window(LABEL) {
+                crate::window_state::track(&w, true);
+            }
             let keep = handle.state::<AppState>().config.lock().unwrap().keep_viewer_secs;
             if keep == 0 {
                 return; // default close: the window and its WebView are destroyed

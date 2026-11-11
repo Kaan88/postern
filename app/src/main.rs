@@ -10,6 +10,7 @@ mod notify;
 mod tray;
 mod viewer;
 mod viewer_auth;
+mod window_state;
 mod watcher;
 
 use std::sync::{Arc, Mutex};

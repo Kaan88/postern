@@ -31,7 +31,7 @@ Use Bulwark Desktop if you want a full mail client on your desktop. Use Postern 
 
 - **Tray icon** with an unread dot, plus a status line: "3 unread", "Offline", "Sign-in needed".
 - **Notifications** for new Inbox mail (up to three per burst, then a summary) and for calendar and task reminders. Clicking one opens that message, event or task list in Bulwark.
-- **Bulwark on demand:** your hosted Bulwark in a window that exists only while it's open. Optionally kept warm for a few minutes for instant reopening.
+- **Bulwark on demand:** your hosted Bulwark in a window that exists only while it's open. It reopens where you left it. Optionally kept warm for a few minutes for instant reopening.
 - **Browser sign-in for Bulwark too:** Bulwark's login page shows "Sign in with your browser" inside Postern. It uses Bulwark's own hand-off, so your passkey or single sign-on happens in your normal browser.
 - **No passwords stored:** OAuth 2.0 authorization code with PKCE (RFC 8252), dynamic client registration with Stalwart, refresh-token rotation. Signing out revokes the token on the server.
 - **Start at login**, and one instance at a time. A `mailto:` link passed to Postern opens Bulwark's composer. Registering Postern as the default mail app isn't implemented yet.
