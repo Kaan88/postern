@@ -31,7 +31,7 @@ const CLIENT_NAME: &str = "Postern";
 const REDIRECT_PATH: &str = "/callback";
 /// Mail and calendars for JMAP; offline_access for the refresh token. Nothing administrative.
 const SCOPES: &str = "openid offline_access urn:ietf:params:oauth:scope:mail urn:ietf:params:oauth:scope:calendars";
-const KEYRING_REFRESH: &str = "oauth-refresh-token";
+const KEYRING_REFRESH: &str = config::KEYRING_REFRESH;
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
@@ -100,6 +100,23 @@ static UNSAVED_REFRESH: Mutex<Option<String>> = Mutex::new(None);
 /// How long one loopback connection may take to send its request line before it is dropped.
 const LOOPBACK_READ_TIMEOUT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(5) };
 
+/// https, or plain http only to this machine (a test server). Everything the app talks to or
+/// opens for a sign-in goes through this, including endpoints a server's metadata names.
+pub fn secure_url(s: &str) -> Result<Url, String> {
+    let url = Url::parse(s.trim()).map_err(|e| e.to_string())?;
+    let local = match url.host() {
+        Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    match url.scheme() {
+        "https" if url.host().is_some() => Ok(url),
+        "http" if local => Ok(url),
+        _ => Err("must use https".into()),
+    }
+}
+
 fn server_base(jmap_url: &str) -> Result<Url, String> {
     let url = Url::parse(jmap_url.trim()).map_err(|e| format!("Mail server URL: {e}"))?;
     let host = url.host_str().ok_or("Mail server URL has no host")?;
@@ -160,6 +177,7 @@ fn form(pairs: &[(&str, &str)]) -> String {
 }
 
 async fn token_request(endpoint: &str, pairs: &[(&str, &str)]) -> Result<TokenResponse, AuthError> {
+    let endpoint = secure_url(endpoint).map_err(|e| AuthError::SignInNeeded(format!("token endpoint {e}")))?;
     let resp = http()
         .map_err(AuthError::Temporary)?
         .post(endpoint)
@@ -285,6 +303,15 @@ pub struct SignedIn {
 /// the refresh token in the keyring, and the access token in memory.
 pub async fn sign_in(app: &AppHandle, cfg: &mut config::Config) -> Result<SignedIn, String> {
     let meta = discover(&cfg.jmap_url).await?;
+    let check = |what: &str, u: &str| secure_url(u).map(|_| ()).map_err(|e| format!("the server's {what} endpoint {e}"));
+    check("authorization", &meta.authorization_endpoint)?;
+    check("token", &meta.token_endpoint)?;
+    if let Some(u) = &meta.registration_endpoint {
+        check("registration", u)?;
+    }
+    if let Some(u) = &meta.revocation_endpoint {
+        check("revocation", u)?;
+    }
     // Stateless client ids are cheap; register again whenever the server or endpoints changed.
     if cfg.oauth_client_id.is_empty() || cfg.oauth_token_endpoint != meta.token_endpoint {
         cfg.oauth_client_id = register(&meta).await?;
@@ -299,7 +326,7 @@ pub async fn sign_in(app: &AppHandle, cfg: &mut config::Config) -> Result<Signed
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect_uri = format!("http://127.0.0.1:{port}{REDIRECT_PATH}");
 
-    let mut authorize = Url::parse(&meta.authorization_endpoint).map_err(|e| format!("authorization endpoint: {e}"))?;
+    let mut authorize = secure_url(&meta.authorization_endpoint).map_err(|e| format!("authorization endpoint: {e}"))?;
     authorize
         .query_pairs_mut()
         .append_pair("response_type", "code")
@@ -332,17 +359,27 @@ pub async fn sign_in(app: &AppHandle, cfg: &mut config::Config) -> Result<Signed
     let refresh = token.refresh_token.as_deref().ok_or("the server issued no refresh token")?;
     let state = app.state::<AppState>();
     let mut cached = state.token.lock().await;
-    config::set_secret(KEYRING_REFRESH, refresh)?;
-    *UNSAVED_REFRESH.lock().unwrap() = None;
+    // The grant is good even if the keyring is not: keep it in memory and retry, as on refresh.
+    match config::set_secret(KEYRING_REFRESH, refresh) {
+        Ok(()) => *UNSAVED_REFRESH.lock().unwrap() = None,
+        Err(e) => {
+            crate::log(&format!("keyring: could not save the token ({e}); keeping it in memory, will retry"));
+            *UNSAVED_REFRESH.lock().unwrap() = Some(refresh.to_string());
+        }
+    }
     *cached = Some(keep(&token));
     drop(cached);
     crate::log("sign-in: done");
     Ok(SignedIn { username: token.username.unwrap_or_default() })
 }
 
-/// The refresh token in use: one the keyring refused to take, else the keyring's.
-fn current_refresh() -> Option<String> {
-    UNSAVED_REFRESH.lock().unwrap().clone().or_else(|| config::secret(KEYRING_REFRESH))
+/// The refresh token in use: one the keyring refused to take, else the keyring's. An error
+/// means the keyring could not be read just now (not that there is no token).
+fn current_refresh() -> Result<Option<String>, String> {
+    if let Some(t) = UNSAVED_REFRESH.lock().unwrap().clone() {
+        return Ok(Some(t));
+    }
+    config::secret(KEYRING_REFRESH)
 }
 
 /// Tries again to save a refresh token the keyring refused earlier (the caller holds the token lock).
@@ -364,7 +401,8 @@ fn forget(cached: &mut Option<AccessToken>) {
 }
 
 pub fn is_signed_in(cfg: &config::Config) -> bool {
-    !cfg.oauth_client_id.is_empty() && current_refresh().is_some()
+    // A keyring that can't be read right now is not a sign-out.
+    !cfg.oauth_client_id.is_empty() && !matches!(current_refresh(), Ok(None))
 }
 
 /// A valid access token, refreshing (and rotating the stored refresh token) when needed.
@@ -376,9 +414,11 @@ pub async fn access_token(app: &AppHandle) -> Result<AccessToken, AuthError> {
         return Ok(t.clone());
     }
     let cfg = state.config.lock().unwrap().clone();
-    let refresh = current_refresh()
-        .filter(|_| !cfg.oauth_client_id.is_empty())
-        .ok_or_else(|| AuthError::SignInNeeded("not signed in".into()))?;
+    let refresh = match current_refresh() {
+        Ok(Some(r)) if !cfg.oauth_client_id.is_empty() => r,
+        Ok(_) => return Err(AuthError::SignInNeeded("not signed in".into())),
+        Err(e) => return Err(AuthError::Temporary(format!("keyring: {e}"))),
+    };
     let token = match token_request(
         &cfg.oauth_token_endpoint,
         &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &cfg.oauth_client_id)],
@@ -412,23 +452,29 @@ pub async fn access_token(app: &AppHandle) -> Result<AccessToken, AuthError> {
 
 /// Revokes the refresh token on the server (best effort) and forgets everything locally.
 /// Holds the token lock throughout, so a refresh in flight can't store a new grant afterwards.
-pub async fn sign_out(app: &AppHandle) {
+/// Returns whether the server confirmed the revocation.
+pub async fn sign_out(app: &AppHandle) -> bool {
     let state = app.state::<AppState>();
     let mut cached = state.token.lock().await;
     let cfg = state.config.lock().unwrap().clone();
-    if let Some(refresh) = current_refresh() {
-        if !cfg.oauth_revocation_endpoint.is_empty() {
-            if let Ok(client) = http() {
-                let _ = client
-                    .post(&cfg.oauth_revocation_endpoint)
-                    .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .body(form(&[("token", &refresh), ("token_type_hint", "refresh_token"), ("client_id", &cfg.oauth_client_id)]))
-                    .send()
-                    .await;
+    let mut revoked = false;
+    if let (Ok(Some(refresh)), Ok(endpoint)) = (current_refresh(), secure_url(&cfg.oauth_revocation_endpoint)) {
+        if let Ok(client) = http() {
+            let resp = client
+                .post(endpoint)
+                .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(form(&[("token", &refresh), ("token_type_hint", "refresh_token"), ("client_id", &cfg.oauth_client_id)]))
+                .send()
+                .await;
+            match resp {
+                Ok(r) if r.status().is_success() => revoked = true,
+                Ok(r) => crate::log(&format!("sign-out: revocation answered HTTP {}", r.status())),
+                Err(e) => crate::log(&format!("sign-out: revocation failed: {e}")),
             }
         }
     }
     forget(&mut cached);
+    revoked
 }
 
 #[cfg(test)]
@@ -439,6 +485,18 @@ mod tests {
     fn server_base_strips_path() {
         assert_eq!(server_base("https://mail.example.com/jmap/session").unwrap().as_str(), "https://mail.example.com/");
         assert_eq!(server_base("https://mail.example.com:8443").unwrap().as_str(), "https://mail.example.com:8443/");
+    }
+
+    #[test]
+    fn only_https_or_loopback_http() {
+        assert!(secure_url("https://mail.example.com/x").is_ok());
+        assert!(secure_url("http://localhost:8080").is_ok());
+        assert!(secure_url("http://127.0.0.1/").is_ok());
+        assert!(secure_url("http://[::1]/").is_ok());
+        assert!(secure_url("http://mail.example.com").is_err());
+        assert!(secure_url("http://localhost.evil.com").is_err());
+        assert!(secure_url("javascript:alert(1)").is_err());
+        assert!(secure_url("file:///C:/x").is_err());
     }
 
     #[test]

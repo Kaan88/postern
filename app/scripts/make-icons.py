@@ -1,7 +1,8 @@
 """Draws Postern's icons from the mark's geometry (64-unit grid) with Pillow.
 
 Outputs (into app/icons and app/installer):
-  icons/icon-1024.png        source for `cargo tauri icon` (ico, icns, png set)
+  icons/icon-1024.png        source for `cargo tauri icon` (icns, png set)
+  icons/icon.ico             written here, after `cargo tauri icon` (see write_ico)
   icons/tray.png, tray-unread.png, tray-offline.png   32 px tray states
   installer/nsis-header.bmp  150x57, installer/nsis-sidebar.bmp 164x314
   installer/wix-banner.bmp   493x58, installer/wix-dialog.bmp 493x312
@@ -9,6 +10,7 @@ Outputs (into app/icons and app/installer):
 Run: python scripts/make-icons.py   (from app/)
 """
 from pathlib import Path
+import sys
 from PIL import Image, ImageDraw
 
 RED = (219, 45, 84)        # Bulwark's brand red, shared on purpose: Postern is a companion
@@ -77,6 +79,44 @@ def dialog(img):
     img.paste(m, ((164 - 96) // 2, 60), m)
 
 
+def write_ico(path, sizes=(16, 20, 24, 32, 40, 48, 64, 256)):
+    """A Windows icon in the classic layout: every size up to 64 px as an uncompressed
+    32-bit DIB, and only 256 px as PNG, as Windows' own icons are built. `cargo tauri icon`
+    stores every size as PNG, which modern Windows reads fine; this layout just adds the
+    hand-tuned small sizes (20, 40 px) and works with older readers too."""
+    import io
+    import struct
+    entries = []
+    for size in sizes:
+        img = mark(size).convert("RGBA")
+        if size >= 256:
+            buf = io.BytesIO()
+            img.save(buf, "PNG")
+            entries.append((size, buf.getvalue()))
+            continue
+        header = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, 0, 0, 0, 0, 0)
+        px = img.tobytes("raw", "BGRA")
+        stride = size * 4
+        xor = b"".join(px[y * stride:(y + 1) * stride] for y in range(size - 1, -1, -1))
+        mask_stride = ((size + 31) // 32) * 4
+        alpha = img.getchannel("A").tobytes()
+        rows = []
+        for y in range(size - 1, -1, -1):
+            bits = bytearray(mask_stride)
+            for x in range(size):
+                if alpha[y * size + x] == 0:
+                    bits[x // 8] |= 0x80 >> (x % 8)
+            rows.append(bytes(bits))
+        entries.append((size, header + xor + b"".join(rows)))
+    out = struct.pack("<HHH", 0, 1, len(entries))
+    offset = 6 + 16 * len(entries)
+    for size, data in entries:
+        dim = 0 if size >= 256 else size
+        out += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset)
+        offset += len(data)
+    path.write_bytes(out + b"".join(d for _, d in entries))
+
+
 def main():
     icons = ROOT / "icons"
     mark(1024).save(icons / "icon-1024.png")
@@ -88,6 +128,8 @@ def main():
     bmp(inst / "nsis-sidebar.bmp", (164, 314), sidebar)
     bmp(inst / "wix-banner.bmp", (493, 58), banner)
     bmp(inst / "wix-dialog.bmp", (493, 312), dialog)
+    if "--ico" in sys.argv:
+        write_ico(icons / "icon.ico")
     print("icons and installer bitmaps written")
 
 

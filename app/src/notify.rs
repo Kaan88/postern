@@ -57,49 +57,16 @@ fn show(app: &AppHandle, title: &str, line1: &str, line2: &str, target: Option<T
             })
             .show();
         match result {
-            Ok(()) => crate::log(&format!("toast shown: {title}")),
+            Ok(()) => crate::log("toast shown"),
             Err(e) => crate::log(&format!("toast failed: {e:?}")),
         }
     });
 }
 
-/// Set by `register` once Windows knows our AppUserModelID with a name and icon.
-#[cfg(windows)]
-static REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-
-/// Registers the bundle identifier as an AppUserModelID under HKCU, with a display name and
-/// an icon file, so toasts show Postern's name and icon. A Start Menu shortcut alone gives
-/// toasts the ID but not reliably the icon. Call once at startup.
-#[cfg(windows)]
-pub fn register(app: &AppHandle) {
-    use tauri::Manager;
-    let ok = (|| -> std::io::Result<()> {
-        let dir = app.path().app_data_dir().map_err(std::io::Error::other)?;
-        std::fs::create_dir_all(&dir)?;
-        let icon = dir.join("toast-icon.png");
-        let png: &[u8] = include_bytes!("../icons/128x128@2x.png");
-        if std::fs::read(&icon).ok().as_deref() != Some(png) {
-            std::fs::write(&icon, png)?;
-        }
-        let key_path = format!(r"Software\Classes\AppUserModelId\{}", app.config().identifier);
-        let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER).create_subkey(key_path)?;
-        let name = app.config().product_name.clone().unwrap_or_else(|| app.package_info().name.clone());
-        key.set_value("DisplayName", &name)?;
-        key.set_value("IconUri", &icon.to_string_lossy().to_string())?;
-        key.set_value("IconBackgroundColor", &"FFDB2D54")?;
-        Ok(())
-    })();
-    if let Err(e) = &ok {
-        crate::log(&format!("toast registration failed: {e}"));
-    }
-    let _ = REGISTERED.set(ok.is_ok());
-}
-
-#[cfg(not(windows))]
-pub fn register(_app: &AppHandle) {}
-
-/// Our own ID once registered; failing that, the Start Menu shortcut's; and for a plain
-/// `cargo run` with neither, PowerShell's, which Windows always knows.
+/// Windows shows a toast under an app ID only if a Start Menu shortcut carries it. Both
+/// installers make one with our identifier: NSIS at `Programs\Postern.lnk` (per user), the MSI
+/// at `Programs\Postern\Postern.lnk` (all users). For a plain `cargo run` without either,
+/// borrow PowerShell's, which Windows always knows.
 #[cfg(windows)]
 fn windows_app_id(app: &AppHandle) -> String {
     use tauri_winrt_notification::Toast;
@@ -109,13 +76,11 @@ fn windows_app_id(app: &AppHandle) -> String {
             .into_iter()
             .flatten()
             .any(|root| {
-                std::path::Path::new(&root)
-                    .join(r"Microsoft\Windows\Start Menu\Programs")
-                    .join(format!("{name}.lnk"))
-                    .exists()
+                let programs = std::path::Path::new(&root).join(r"Microsoft\Windows\Start Menu\Programs");
+                programs.join(format!("{name}.lnk")).exists() || programs.join(name).join(format!("{name}.lnk")).exists()
             })
     };
-    if REGISTERED.get().copied().unwrap_or(false) || shortcut_exists() {
+    if shortcut_exists() {
         app.config().identifier.clone()
     } else {
         Toast::POWERSHELL_APP_ID.to_string()
@@ -126,6 +91,6 @@ fn windows_app_id(app: &AppHandle) -> String {
 fn show(_app: &AppHandle, title: &str, line1: &str, line2: &str, _target: Option<Target>) {
     let body = if line2.is_empty() { line1.to_string() } else { format!("{line1}\n{line2}") };
     if let Err(e) = notify_rust::Notification::new().summary(title).body(&body).show() {
-        eprintln!("notification: {e}");
+        crate::log(&format!("notification: {e}"));
     }
 }

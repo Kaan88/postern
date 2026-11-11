@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-use tauri::{AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{webview::NewWindowResponse, AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::AppState;
 
@@ -29,11 +29,29 @@ fn target_url(app: &AppHandle, path: &str) -> Result<Url, String> {
 
 const NO_URL: &str = "no Bulwark URL set";
 
+/// A web link the viewer won't load itself goes to the default browser; anything else is dropped.
+fn open_outside(url: &Url) {
+    if matches!(url.scheme(), "http" | "https") {
+        crate::log(&format!("viewer: opening {} in the browser", url.origin().ascii_serialization()));
+        if let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
+            crate::log(&format!("viewer: no browser: {e}"));
+        }
+    }
+}
+
+/// Closes the viewer for good (e.g. its URL changed: it must be rebuilt for the new origin).
+pub fn destroy(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(LABEL) {
+        HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        let _ = w.destroy();
+    }
+}
+
 /// Opens (or focuses) the viewer on your Bulwark instance. `path` is app-relative: "" for its
 /// start page, `mail/message/<id>`, `calendar/event/<id>`, `protocol/mailto?url=…`.
 pub fn open(app: &AppHandle, path: &str) {
     if let Err(e) = try_open(app, path) {
-        eprintln!("viewer: {e}");
+        crate::log(&format!("viewer: {e}"));
         if e == NO_URL {
             open_settings(app);
         }
@@ -53,9 +71,29 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
     }
 
     let url = target_url(app, path)?;
+    let bulwark = url.origin();
+    // The mail server too: Bulwark's own "Sign in with Stalwart" may run in the window.
+    let server = Url::parse(app.state::<AppState>().config.lock().unwrap().jmap_url.trim()).ok().map(|u| u.origin());
     crate::viewer_auth::grant(app);
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
-        .initialization_script(crate::viewer_auth::init_script())
+        .initialization_script(crate::viewer_auth::init_script(&bulwark.ascii_serialization()))
+        // Only Bulwark (and its mail server) load in here; every other link opens in the browser.
+        .on_navigation(move |to| {
+            if to.origin() == bulwark || server.as_ref() == Some(&to.origin()) || to.scheme() == "about" {
+                return true;
+            }
+            open_outside(to);
+            false
+        })
+        .on_new_window(|to, _features| {
+            if matches!(to.scheme(), "http" | "https") {
+                open_outside(&to);
+                return NewWindowResponse::Deny;
+            }
+            NewWindowResponse::Allow // blob: and the like (attachments, print previews)
+        })
+        // Files dropped on the window go to Bulwark's own drop zones (attachments), not to Tauri.
+        .disable_drag_drop_handler()
         .title("Bulwark")
         .inner_size(1280.0, 860.0)
         .min_inner_size(480.0, 400.0)
@@ -141,6 +179,6 @@ pub fn open_settings(app: &AppHandle) {
         .resizable(false)
         .build();
     if let Err(e) = result {
-        eprintln!("settings window: {e}");
+        crate::log(&format!("settings window: {e}"));
     }
 }

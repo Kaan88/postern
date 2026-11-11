@@ -49,9 +49,14 @@ static GRANTED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::defaul
 /// When the browser was last opened for a sign-in: a script on the page can't open it in a loop.
 static LAST_OPEN: Mutex<Option<Instant>> = Mutex::new(None);
 const MIN_OPEN_INTERVAL: Duration = Duration::from_secs(3);
+/// When a flow was last begun: each one binds a port, so a page can't make them in a loop.
+static LAST_BEGIN: Mutex<Option<Instant>> = Mutex::new(None);
+const MIN_BEGIN_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Runs in the viewer before Bulwark's own scripts, on every page load (main frame only).
-pub fn init_script() -> String {
+/// Runs in the viewer before Bulwark's own scripts, on every page load (main frame only), and
+/// does nothing on any origin but Bulwark's (`origin`, e.g. `https://webmail.example.com`).
+pub fn init_script(origin: &str) -> String {
+    let origin = serde_json::to_string(origin).unwrap_or_else(|_| "\"\"".into());
     let platform = if cfg!(target_os = "windows") {
         "win32"
     } else if cfg!(target_os = "macos") {
@@ -61,6 +66,7 @@ pub fn init_script() -> String {
     };
     format!(
         r#"(() => {{
+  if (location.origin !== {origin}) return;
   // With Bulwark's "Auto SSO" on, its login page goes straight to the provider. That should
   // happen in the browser this window opens, not in here: the flag Bulwark's own loop guard
   // checks keeps this window on its login page, with "Sign in with your browser".
@@ -142,6 +148,13 @@ pub async fn viewer_sign_in_begin(app: AppHandle, webview: Webview) -> Value {
     if check_caller(&app, &webview).is_err() {
         return fail("invalid");
     }
+    {
+        let mut last = LAST_BEGIN.lock().unwrap();
+        if last.is_some_and(|t| t.elapsed() < MIN_BEGIN_INTERVAL) {
+            return fail("busy");
+        }
+        *last = Some(Instant::now());
+    }
     let listener = match TcpListener::bind("127.0.0.1:0").await {
         Ok(l) => l,
         Err(e) => return fail(&format!("listener: {e}")),
@@ -175,7 +188,12 @@ pub async fn viewer_sign_in_begin(app: AppHandle, webview: Webview) -> Value {
 /// Only Bulwark's own login page on the same instance, carrying this flow's redirect and state.
 fn check_target(base: &Url, url: &str, redirect_uri: &str, state: &str) -> Result<Url, &'static str> {
     let target = Url::parse(url).map_err(|_| "invalid")?;
-    let param = |k: &str| target.query_pairs().find(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+    // Exactly one of each: with two, the server and this check could read different ones.
+    let param = |k: &str| {
+        let mut values = target.query_pairs().filter(|(n, _)| n == k).map(|(_, v)| v.into_owned());
+        let first = values.next();
+        if values.next().is_some() { None } else { first }
+    };
     let ok = origin(&target) == origin(base)
         && target.path().trim_end_matches('/').ends_with("/login")
         && param("mobile_redirect_uri").as_deref() == Some(redirect_uri)
@@ -270,5 +288,7 @@ mod tests {
         assert!(check_target(&base, &make("evil.example.com", "/en/login", "s"), redirect, "s").is_err());
         assert!(check_target(&base, &make("webmail.example.com", "/en/settings", "s"), redirect, "s").is_err());
         assert!(check_target(&base, &make("webmail.example.com", "/en/login", "other"), redirect, "s").is_err());
+        let twice = format!("{}&mobile_redirect_uri=http%3A%2F%2Fevil.example.com%2F", make("webmail.example.com", "/en/login", "s"));
+        assert!(check_target(&base, &twice, redirect, "s").is_err());
     }
 }

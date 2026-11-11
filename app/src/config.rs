@@ -2,10 +2,16 @@
 //! (only the OAuth refresh token; no passwords are stored).
 
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Manager};
 
 const KEYRING_SERVICE: &str = "postern";
+/// The keyring entry that holds the OAuth refresh token.
+pub const KEYRING_REFRESH: &str = "oauth-refresh-token";
 /// Before the rename to Postern (0.1.x): moved over once by `migrate_legacy`.
 const LEGACY_KEYRING_SERVICE: &str = "bulwark-native";
 const LEGACY_CONFIG_DIR: &str = "dev.bulwark-native.tray";
@@ -61,54 +67,68 @@ fn path(app: &AppHandle) -> Option<PathBuf> {
 }
 
 pub fn load(app: &AppHandle) -> Config {
-    let Some(p) = path(app) else { return default_config() };
+    let Some(p) = path(app) else { return Config::default() };
+    crate::log(&format!("config: {}", p.display()));
     match fs::read_to_string(&p) {
         Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
-            eprintln!("config: {} is not valid ({e}); using defaults", p.display());
-            default_config()
+            crate::log(&format!("config: {} is not valid ({e}); using defaults", p.display()));
+            Config::default()
         }),
-        Err(_) => default_config(),
+        Err(_) => Config::default(),
     }
 }
 
-fn default_config() -> Config {
-    Config::default()
+/// Writes `bytes` to a temporary file next to `path` and renames it over `path`, so a crash or
+/// power cut mid-write leaves the old file rather than a truncated one.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, path)
 }
 
 pub fn save(app: &AppHandle, config: &Config) -> Result<(), String> {
     let p = path(app).ok_or("no config directory")?;
-    if let Some(dir) = p.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
     let json = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    fs::write(&p, json).map_err(|e| e.to_string())
+    write_atomic(&p, json.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// Carries a 0.1.x ("Bulwark Tray") install over to Postern, once: its config.json from the
-/// old app-config folder, and its OAuth refresh token from the old keyring service. Nothing is
-/// overwritten if Postern already has its own. The Bulwark window's cookies (a separate WebView
+/// old app-config folder and, with it, its OAuth refresh token from the old keyring service
+/// (copied, not moved, so the old version still works if Postern is removed). Nothing is
+/// migrated if Postern already has its own settings: a token only makes sense next to the
+/// client id in the config it came with. The Bulwark window's cookies (a separate WebView
 /// profile) don't move: one "Sign in with your browser" brings them back.
 pub fn migrate_legacy(app: &AppHandle) {
     let (Some(new_cfg), Ok(dir)) = (path(app), app.path().app_config_dir()) else { return };
-    if !new_cfg.exists() {
-        if let Some(old) = dir.parent().map(|p| p.join(LEGACY_CONFIG_DIR).join("config.json")).filter(|p| p.exists()) {
-            let moved = new_cfg.parent().map(fs::create_dir_all).transpose().and_then(|_| fs::copy(&old, &new_cfg));
-            match moved {
-                Ok(_) => crate::log(&format!("migrated settings from {}", old.display())),
-                Err(e) => crate::log(&format!("could not migrate settings from {}: {e}", old.display())),
-            }
-        }
+    if new_cfg.exists() {
+        return;
     }
-    for name in ["oauth-refresh-token"] {
-        if secret(name).is_some() {
-            continue;
-        }
-        let Ok(old) = keyring::Entry::new(LEGACY_KEYRING_SERVICE, name) else { continue };
-        if let Ok(value) = old.get_password() {
-            if set_secret(name, &value).is_ok() {
-                let _ = old.delete_credential();
-                crate::log("migrated the sign-in token to Postern's keyring entry");
-            }
+    let Some(old) = dir.parent().map(|p| p.join(LEGACY_CONFIG_DIR).join("config.json")).filter(|p| p.exists()) else {
+        return;
+    };
+    let copied = fs::read(&old).and_then(|bytes| write_atomic(&new_cfg, &bytes));
+    if let Err(e) = copied {
+        crate::log(&format!("could not migrate settings from {}: {e}", old.display()));
+        return;
+    }
+    crate::log(&format!("migrated settings from {} to {}", old.display(), new_cfg.display()));
+    if !matches!(secret(KEYRING_REFRESH), Ok(None)) {
+        return; // already has one, or the keyring can't be read: leave it
+    }
+    let Ok(old_entry) = keyring::Entry::new(LEGACY_KEYRING_SERVICE, KEYRING_REFRESH) else { return };
+    if let Ok(value) = old_entry.get_password() {
+        match set_secret(KEYRING_REFRESH, &value) {
+            Ok(()) => crate::log("migrated the sign-in token to Postern's keyring entry"),
+            Err(e) => crate::log(&format!("could not migrate the sign-in token: {e}")),
         }
     }
 }
@@ -117,8 +137,13 @@ fn entry(name: &str) -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, name).map_err(|e| e.to_string())
 }
 
-pub fn secret(name: &str) -> Option<String> {
-    entry(name).ok()?.get_password().ok()
+/// `Ok(None)` when there is no such entry; `Err` when the keyring could not be read.
+pub fn secret(name: &str) -> Result<Option<String>, String> {
+    match entry(name)?.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 pub fn set_secret(name: &str, value: &str) -> Result<(), String> {

@@ -47,7 +47,7 @@
       <button type="button" id="signin" class="primary">Sign in</button>
       <button type="button" id="signout" hidden>Sign out</button>
     </div>
-    <div class="hint">Opens your browser to sign in on the server itself (OAuth). No password is stored here; only a renewable token, in the Windows keyring.</div>
+    <div class="hint">Opens your browser to sign in on the server itself (OAuth). No password is stored here; only a renewable token, in the system keyring.</div>
   </fieldset>
   <fieldset>
     <legend>Viewer</legend>
@@ -67,7 +67,7 @@
   <div id="msg" role="status" aria-live="polite"></div>
 </form>
 <script>
-  const { invoke } = window.__TAURI__.core;
+  const invoke = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {});
   const $ = (id) => document.getElementById(id);
   const msg = (text, kind) => { $("msg").textContent = text; $("msg").className = kind || ""; };
   const read = () => ({
@@ -103,7 +103,11 @@
     $("signin").disabled = false;
   });
   $("signout").addEventListener("click", async () => {
-    try { await invoke("sign_out"); await load(); msg("Signed out. The token was revoked on the server.", "ok"); }
+    try {
+      const revoked = await invoke("sign_out");
+      await load();
+      msg(revoked ? "Signed out. The server revoked the sign-in." : "Signed out here. The server did not confirm the revocation; it ends when the token expires or you revoke it in Stalwart.", "ok");
+    }
     catch (e) { msg(String(e), "err"); }
   });
   $("f").addEventListener("submit", async (ev) => {

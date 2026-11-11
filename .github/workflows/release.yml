@@ -2,6 +2,7 @@
 # like Bulwark Desktop's: installers, a .sha256 per file, and build provenance attestations
 # (check one with: gh attestation verify <file> --repo <owner>/<repo>).
 # Run it by pushing a tag v<version> matching app/tauri.conf.json, or by hand.
+# Actions are pinned to commit SHAs (the tag each one was at is noted alongside).
 name: release
 
 on:
@@ -9,13 +10,14 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 jobs:
   build:
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -26,34 +28,50 @@ jobs:
             runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check the tag matches the app version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $version = (Get-Content app/tauri.conf.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "tag $env:GITHUB_REF_NAME does not match app version $version" }
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      # Release builds start clean: no cache an earlier run could have left behind.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        if: github.ref_type != 'tag'
         with:
           workspaces: app
       - name: Install the Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: cargo install tauri-cli --version "=2.12.4" --locked
       - name: Test
         working-directory: app
         run: cargo test --locked
       - name: Build installers
         run: powershell -File app/scripts/release.ps1 -Arch ${{ matrix.arch }}
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: |
             app/dist/*/Postern-*.exe
             app/dist/*/Postern-*.msi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: postern-${{ matrix.arch }}
           path: app/dist/*/*
 
   release:
     needs: build
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: out
           merge-multiple: true
@@ -62,6 +80,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version=$(jq -r .version app/tauri.conf.json)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "tag $GITHUB_REF_NAME does not match app version $version" >&2; exit 1
+          fi
           notes="release/v${version}.md"
           [ -f "$notes" ] || notes=/dev/null
           gh release create "v${version}" out/*/* \

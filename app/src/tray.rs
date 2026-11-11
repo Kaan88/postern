@@ -1,5 +1,7 @@
 //! Tray icon and menu. Left click opens Bulwark; the menu has the rest.
 
+use std::sync::{LazyLock, Mutex};
+
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
@@ -16,13 +18,27 @@ pub struct TrayItems {
     status: MenuItem<Wry>,
 }
 
+/// Decoded once: plain, unread, offline.
+static ICONS: LazyLock<[Image<'static>; 3]> = LazyLock::new(|| {
+    [
+        include_bytes!("../icons/tray.png").as_slice(),
+        include_bytes!("../icons/tray-unread.png").as_slice(),
+        include_bytes!("../icons/tray-offline.png").as_slice(),
+    ]
+    .map(|bytes| Image::from_bytes(bytes).expect("bundled tray icon"))
+});
+
+/// The last status shown, so a refresh that changes nothing doesn't touch the tray.
+static SHOWN: Mutex<Option<Status>> = Mutex::new(None);
+
 fn icon(status: &Status) -> Image<'static> {
-    let bytes: &'static [u8] = match status {
-        Status::Online { unread } if *unread > 0 => include_bytes!("../icons/tray-unread.png"),
-        Status::Online { .. } => include_bytes!("../icons/tray.png"),
-        _ => include_bytes!("../icons/tray-offline.png"),
+    let i = match status {
+        Status::Online { unread } if *unread > 0 => 1,
+        // Connecting is normal (start-up, token renewal): not worth the offline look.
+        Status::Online { .. } | Status::Connecting => 0,
+        _ => 2,
     };
-    Image::from_bytes(bytes).expect("bundled tray icon")
+    ICONS[i].clone()
 }
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
@@ -55,7 +71,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 let on = launcher.is_enabled().unwrap_or(false);
                 let result = if on { launcher.disable() } else { launcher.enable() };
                 if let Err(e) = result {
-                    eprintln!("autostart: {e}");
+                    crate::log(&format!("autostart: {e}"));
                 }
                 let _ = autostart.set_checked(launcher.is_enabled().unwrap_or(false));
             }
@@ -74,6 +90,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn set_status(app: &AppHandle, status: &Status) {
+    {
+        let mut shown = SHOWN.lock().unwrap();
+        if shown.as_ref() == Some(status) {
+            return;
+        }
+        *shown = Some(status.clone());
+    }
     let text = match status {
         Status::NotConfigured => "Not set up: open Settings".to_string(),
         Status::Connecting => "Connecting…".to_string(),

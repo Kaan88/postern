@@ -20,9 +20,33 @@ use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::Notify;
 
-/// Timestamped line on stderr (visible with `cargo run`, or redirect it to a file).
+/// The log file, once the app knows where its log folder is.
+static LOG_FILE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+/// Past this the log starts over (the previous one is kept as postern.old.log).
+const LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Timestamped line on stderr and in postern.log in the app's log folder. Lines say what
+/// happened, not to whom: no addresses, names, subjects or tokens.
 pub fn log(msg: &str) {
-    eprintln!("[{}] {msg}", chrono::Local::now().format("%H:%M:%S"));
+    let line = format!("[{}] {msg}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    eprintln!("{line}");
+    let Some(path) = LOG_FILE.get() else { return };
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
+        let _ = std::fs::rename(path, path.with_file_name("postern.old.log"));
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn init_log(app: &AppHandle) {
+    if let Ok(dir) = app.path().app_log_dir() {
+        if std::fs::create_dir_all(&dir).is_ok() {
+            let _ = LOG_FILE.set(dir.join("postern.log"));
+        }
+    }
+    log(&format!("Postern {} starting", app.package_info().version));
 }
 
 pub struct AppState {
@@ -57,14 +81,8 @@ async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String
 }
 
 fn validate(input: &SettingsInput) -> Result<(), String> {
-    let jmap = tauri::Url::parse(input.jmap_url.trim()).map_err(|e| format!("Mail server URL: {e}"))?;
-    if jmap.scheme() != "https" && jmap.host_str() != Some("localhost") {
-        return Err("Mail server URL must use https".into());
-    }
-    let viewer = tauri::Url::parse(input.viewer_url.trim()).map_err(|e| format!("Bulwark URL: {e}"))?;
-    if viewer.scheme() != "https" && viewer.host_str() != Some("localhost") {
-        return Err("Bulwark URL must use https".into());
-    }
+    auth::secure_url(&input.jmap_url).map_err(|e| format!("Mail server URL {e}"))?;
+    auth::secure_url(&input.viewer_url).map_err(|e| format!("Bulwark URL {e}"))?;
     Ok(())
 }
 
@@ -96,7 +114,11 @@ async fn apply(app: &AppHandle, input: SettingsInput) -> Result<config::Config, 
 fn store(app: &AppHandle, config: config::Config) -> Result<(), String> {
     config::save(app, &config)?;
     let state = app.state::<AppState>();
-    *state.config.lock().unwrap() = config;
+    let old = std::mem::replace(&mut *state.config.lock().unwrap(), config.clone());
+    if old.viewer_url.trim() != config.viewer_url.trim() {
+        // Its navigation rules and bridge are tied to the old origin: rebuild on next open.
+        viewer::destroy(app);
+    }
     state.restart.notify_one();
     Ok(())
 }
@@ -110,27 +132,47 @@ async fn save_settings(app: AppHandle, settings: SettingsInput) -> Result<(), St
 /// Saves the fields, then runs the browser sign-in and checks the account over JMAP.
 #[tauri::command]
 async fn sign_in(app: AppHandle, settings: SettingsInput) -> Result<String, String> {
-    let mut next = apply(&app, settings).await?;
-    store(&app, next.clone())?;
-    let signed = auth::sign_in(&app, &mut next).await?;
+    let mut signing = apply(&app, settings).await?;
+    store(&app, signing.clone())?;
+    let signed = auth::sign_in(&app, &mut signing).await?;
+    // The browser step can take minutes: keep whatever was saved meanwhile, add only the sign-in.
+    let mut next = app.state::<AppState>().config.lock().unwrap().clone();
+    if next.jmap_url.trim() != signing.jmap_url.trim() {
+        return Err("The mail server URL changed during the sign-in. Sign in again.".into());
+    }
+    next.oauth_client_id = signing.oauth_client_id;
+    next.oauth_token_endpoint = signing.oauth_token_endpoint;
+    next.oauth_revocation_endpoint = signing.oauth_revocation_endpoint;
     if !signed.username.is_empty() {
         next.username = signed.username;
     }
     store(&app, next.clone())?;
-    let token = auth::access_token(&app).await.map_err(|e| e.to_string())?;
-    let client = watcher::connect(&next, &token.token).await?;
-    let inbox = watcher::inbox_id(&client).await?;
-    let unread = watcher::inbox_unread(&client, &inbox).await?;
-    Ok(format!("Signed in as {}. {unread} unread in the Inbox.", next.username))
+    let who = if next.username.is_empty() { String::new() } else { format!(" as {}", next.username) };
+    // Signed in from here on: a failed check is reported, not turned into a sign-in error.
+    let check = async {
+        let token = auth::access_token(&app).await?;
+        let client = watcher::connect(&next, &token.token).await?;
+        let inbox = watcher::inbox_id(&client).await?;
+        watcher::inbox_unread(&client, &inbox).await
+    };
+    let checked: Result<usize, watcher::Failure> = check.await;
+    Ok(match checked {
+        Ok(unread) => format!("Signed in{who}. {unread} unread in the Inbox."),
+        Err(e) => format!("Signed in{who}, but the Inbox could not be read yet: {e}"),
+    })
 }
 
+/// Returns whether the server confirmed it revoked the sign-in.
 #[tauri::command]
-async fn sign_out(app: AppHandle) -> Result<(), String> {
-    auth::sign_out(&app).await;
+async fn sign_out(app: AppHandle) -> Result<bool, String> {
+    let revoked = auth::sign_out(&app).await;
     let mut next = app.state::<AppState>().config.lock().unwrap().clone();
     next.username.clear();
     next.oauth_client_id.clear();
-    store(&app, next)
+    next.oauth_token_endpoint.clear();
+    next.oauth_revocation_endpoint.clear();
+    store(&app, next)?;
+    Ok(revoked)
 }
 
 fn mailto_arg(args: &[String]) -> Option<&str> {
@@ -156,8 +198,8 @@ fn main() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            init_log(&handle);
             config::migrate_legacy(&handle);
-            notify::register(&handle);
             let cfg = config::load(&handle);
             let complete = cfg.is_complete() && auth::is_signed_in(&cfg) && !cfg.viewer_url.trim().is_empty();
             let restart = Arc::new(Notify::new());

@@ -32,11 +32,10 @@ fn load(app: &AppHandle) -> Option<Bounds> {
 
 fn write(app: &AppHandle, b: Bounds) {
     let Some(p) = path(app) else { return };
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
     if let Ok(text) = serde_json::to_string(&b) {
-        let _ = std::fs::write(p, text);
+        if let Err(e) = crate::config::write_atomic(&p, text.as_bytes()) {
+            crate::log(&format!("window state: {e}"));
+        }
     }
 }
 
