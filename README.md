@@ -32,6 +32,7 @@ Use Bulwark Desktop if you want a full mail client on your desktop. Use Postern 
 - **Tray icon** with an unread dot, plus a status line: "3 unread messages", "Offline: …", "Sign-in failed: check Settings".
 - **Notifications** for new Inbox mail (up to three per burst, then a summary) and for calendar and task reminders, with times shown in your own time zone. While Postern is running, clicking one opens that message, event or task list in Bulwark.
 - **Bulwark on demand:** your hosted Bulwark in a window that exists only while it's open. It reopens where you left it. Optionally kept warm for a few minutes for instant reopening. Links to other sites open in your normal browser.
+- **Works behind a sign-in gateway:** if Cloudflare Access, Authelia, oauth2-proxy or similar sits in front of your Bulwark, its login runs inside the window, so the session lands where it's needed. "Reset webmail session" in the tray menu clears a stuck one.
 - **Browser sign-in for Bulwark too:** Bulwark's login page shows "Sign in with your browser" inside Postern. It uses Bulwark's own hand-off, so your passkey or single sign-on happens in your normal browser.
 - **No passwords stored:** OAuth 2.0 authorization code with PKCE (RFC 8252), dynamic client registration with Stalwart, refresh-token rotation. Signing out asks the server to revoke the token and tells you whether it did.
 - **Start at login**, and one instance at a time. A `mailto:` link passed to Postern opens Bulwark's composer. Registering Postern as the default mail app isn't implemented yet.
@@ -53,13 +54,13 @@ Download from [Releases](../../releases):
 The installers are not code-signed yet, so Windows SmartScreen will warn you. Check the download against its `.sha256` file first:
 
 ```powershell
-(Get-FileHash .\Postern-Setup-0.2.0-x64.exe -Algorithm SHA256).Hash
+(Get-FileHash .\Postern-Setup-0.2.1-x64.exe -Algorithm SHA256).Hash
 ```
 
 Or, with the [GitHub CLI](https://cli.github.com/), check that it was built by this repository's release workflow:
 
 ```bash
-gh attestation verify Postern-Setup-0.2.0-x64.exe --repo Kaan88/postern
+gh attestation verify Postern-Setup-0.2.1-x64.exe --repo Kaan88/postern
 ```
 
 To uninstall, sign out in Settings first, so the token is revoked and removed from Windows Credential Manager; then remove Postern from Windows Settings › Apps. Your settings stay in `%APPDATA%\app.postern` until you delete that folder.

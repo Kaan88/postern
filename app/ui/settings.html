@@ -35,11 +35,11 @@
 </head>
 <body>
 <h1>Postern</h1>
-<p class="lead">Watches your Inbox and calendar over JMAP push and opens Bulwark only while you use it.</p>
+<p class="lead">Watches your Inbox and calendar over JMAP push and opens your webmail only while you use it.</p>
 <form id="f" autocomplete="off">
   <fieldset>
     <legend>Mail server</legend>
-    <label for="jmap_url">Stalwart URL</label>
+    <label for="jmap_url">Mail server URL</label>
     <input id="jmap_url" type="url" required placeholder="https://mail.example.com">
     <div class="hint">The server that answers /.well-known/jmap.</div>
     <div class="account">
@@ -51,15 +51,15 @@
   </fieldset>
   <fieldset>
     <legend>Viewer</legend>
-    <label for="viewer_url">Bulwark URL</label>
+    <label for="viewer_url">Webmail URL</label>
     <input id="viewer_url" type="url" required placeholder="https://webmail.example.com">
-    <div class="hint">Your hosted Bulwark. Sign in once in the window it opens, with "Remember me" ticked.</div>
+    <div class="hint">Your hosted webmail. Sign in once in the window it opens, with "Remember me" ticked.</div>
     <label for="keep_viewer_secs">Keep the window in memory after closing (seconds)</label>
     <input id="keep_viewer_secs" type="number" min="0" max="3600" step="1">
     <div class="hint">0 frees all its memory at once; a few minutes makes a quick reopen instant.</div>
     <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
     <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
-    <div class="hint">Sent by the mail server itself, so they arrive with Bulwark closed. Needs calendar alarms enabled on Stalwart.</div>
+    <div class="hint">Sent by the mail server itself, so they arrive with the webmail closed. Needs calendar alarms enabled on the mail server.</div>
   </fieldset>
   <div class="row">
     <button type="submit">Save</button>
@@ -106,7 +106,7 @@
     try {
       const revoked = await invoke("sign_out");
       await load();
-      msg(revoked ? "Signed out. The server revoked the sign-in." : "Signed out here. The server did not confirm the revocation; it ends when the token expires or you revoke it in Stalwart.", "ok");
+      msg(revoked ? "Signed out. The server revoked the sign-in." : "Signed out here. The server did not confirm the revocation; it ends when the token expires or you revoke it on the server.", "ok");
     }
     catch (e) { msg(String(e), "err"); }
   });

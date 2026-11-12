@@ -1,6 +1,6 @@
 [package]
 name = "postern"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Postern: a light tray companion for Bulwark Mail on Stalwart"
 license = "MIT"

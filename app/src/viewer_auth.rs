@@ -103,7 +103,7 @@ fn origin(url: &Url) -> String {
 
 fn viewer_base(app: &AppHandle) -> Result<Url, String> {
     let s = app.state::<AppState>().config.lock().unwrap().viewer_url.trim().to_string();
-    Url::parse(&s).map_err(|e| format!("Bulwark URL: {e}"))
+    Url::parse(&s).map_err(|e| format!("Webmail URL: {e}"))
 }
 
 /// Lets the viewer, on the configured Bulwark origin, call the three commands above. Once per origin.
@@ -230,13 +230,13 @@ pub async fn viewer_sign_in_complete(app: AppHandle, webview: Webview, flow_id: 
         }
         *last = Some(Instant::now());
     }
-    crate::log("viewer sign-in: opening Bulwark's login in the browser");
+    crate::log("viewer sign-in: opening the webmail login in the browser");
     if let Err(e) = tauri_plugin_opener::open_url(target.as_str(), None::<&str>) {
         crate::log(&format!("viewer sign-in: no browser: {e}"));
         return finish(fail("no_browser"));
     }
     let outcome = tokio::select! {
-        r = tokio::time::timeout(auth::SIGN_IN_TIMEOUT, auth::wait_for_code(listener, CALLBACK_PATH, &state, "Bulwark")) => r,
+        r = tokio::time::timeout(auth::SIGN_IN_TIMEOUT, auth::wait_for_code(listener, CALLBACK_PATH, &state, "Postern")) => r,
         _ = cancel.notified() => return finish(fail("cancelled")),
     };
     let result = match outcome {

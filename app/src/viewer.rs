@@ -2,10 +2,13 @@
 //! ends every WebView2 process within ~1–2.5 s (see experiments/wv2-lifecycle).
 
 use std::{
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
-use tauri::{webview::NewWindowResponse, AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{webview::{NewWindowResponse, PageLoadEvent}, AppHandle, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use crate::AppState;
 
@@ -23,11 +26,11 @@ fn target_url(app: &AppHandle, path: &str) -> Result<Url, String> {
     if !s.ends_with('/') {
         s.push('/'); // so join() keeps a sub-path deploy such as /webmail/
     }
-    let base = Url::parse(&s).map_err(|e| format!("Bulwark URL: {e}"))?;
+    let base = Url::parse(&s).map_err(|e| format!("Webmail URL: {e}"))?;
     base.join(path.trim_start_matches('/')).map_err(|e| e.to_string())
 }
 
-const NO_URL: &str = "no Bulwark URL set";
+const NO_URL: &str = "no webmail URL set";
 
 /// A web link the viewer won't load itself goes to the default browser; anything else is dropped.
 fn open_outside(url: &Url) {
@@ -35,6 +38,43 @@ fn open_outside(url: &Url) {
         crate::log(&format!("viewer: opening {} in the browser", url.origin().ascii_serialization()));
         if let Err(e) = tauri_plugin_opener::open_url(url.as_str(), None::<&str>) {
             crate::log(&format!("viewer: no browser: {e}"));
+        }
+    }
+}
+
+/// Tells a sign-in gateway apart from a link to another site.
+///
+/// A gateway in front of Bulwark (Cloudflare Access, Authelia, oauth2-proxy, …) answers a request
+/// for Bulwark with a redirect to its own login, and often on to an identity provider. That whole
+/// chain has to stay in the window: its cookies must land here, and a callback that ends up in
+/// the browser finds no session. A link the user follows starts from a Bulwark page that has
+/// finished loading; a gateway's redirect arrives before one has.
+#[derive(Default)]
+struct Gate {
+    /// A page of Bulwark (or its mail server) has finished loading since the last navigation to it.
+    settled: bool,
+    /// Away at a gateway's login: stay in the window until it sends us back.
+    gateway: bool,
+}
+
+impl Gate {
+    /// Whether a navigation loads in the window. `home`: it goes to Bulwark or its mail server.
+    fn navigate(&mut self, home: bool, https: bool) -> bool {
+        if home {
+            *self = Gate::default();
+            return true;
+        }
+        if https && (self.gateway || !self.settled) {
+            self.gateway = true;
+            return true;
+        }
+        false
+    }
+
+    /// A page finished loading (or failed to); `home` as above.
+    fn loaded(&mut self, home: bool) {
+        if home {
+            self.settled = true;
         }
     }
 }
@@ -75,16 +115,30 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
     let popup_origin = bulwark.clone();
     // The mail server too: Bulwark's own "Sign in with Stalwart" may run in the window.
     let server = Url::parse(app.state::<AppState>().config.lock().unwrap().jmap_url.trim()).ok().map(|u| u.origin());
+    let gate = Arc::new(Mutex::new(Gate::default()));
+    let loaded_gate = gate.clone();
+    let (loaded_bulwark, loaded_server) = (bulwark.clone(), server.clone());
     crate::viewer_auth::grant(app);
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
         .initialization_script(crate::viewer_auth::init_script(&bulwark.ascii_serialization()))
-        // Only Bulwark (and its mail server) load in here; every other link opens in the browser.
+        // Only Bulwark, its mail server and a sign-in gateway in front of them load in here (see
+        // `Gate`); every other link opens in the browser.
         .on_navigation(move |to| {
-            if to.origin() == bulwark || server.as_ref() == Some(&to.origin()) || to.scheme() == "about" {
+            if to.scheme() == "about" {
+                return true;
+            }
+            let home = to.origin() == bulwark || server.as_ref() == Some(&to.origin());
+            if gate.lock().unwrap().navigate(home, to.scheme() == "https") {
                 return true;
             }
             open_outside(to);
             false
+        })
+        .on_page_load(move |_, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let at = payload.url().origin();
+                loaded_gate.lock().unwrap().loaded(at == loaded_bulwark || loaded_server.as_ref() == Some(&at));
+            }
         })
         .on_new_window(move |to, _features| {
             // Bulwark's own blob: pages (attachments, print previews) may open; web links go
@@ -97,7 +151,7 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
         })
         // Files dropped on the window go to Bulwark's own drop zones (attachments), not to Tauri.
         .disable_drag_drop_handler()
-        .title("Bulwark")
+        .title("Postern")
         .inner_size(1280.0, 860.0)
         .min_inner_size(480.0, 400.0)
         .visible(false)
@@ -146,6 +200,25 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Forgets everything the Bulwark window stored (cookies, Cloudflare Access sessions, local data)
+/// and starts it again from the sign-in page. For a login stuck on a stale or half-finished session.
+pub fn reset_session(app: &AppHandle) {
+    open(app, "");
+    let app = app.clone();
+    // Off the main thread: WebView2's browsing-data calls can deadlock there.
+    std::thread::spawn(move || {
+        let Some(w) = app.get_webview_window(LABEL) else { return };
+        if let Err(e) = w.clear_all_browsing_data() {
+            crate::log(&format!("viewer: reset failed: {e}"));
+            return;
+        }
+        if let Ok(url) = target_url(&app, "") {
+            let _ = w.navigate(url);
+        }
+        crate::log("viewer: session reset");
+    });
+}
+
 /// Opens Bulwark's composer for a `mailto:` URL through its own handler route.
 pub fn open_mailto(app: &AppHandle, mailto: &str) {
     let mut path = Url::parse("http://x/protocol/mailto").expect("static url");
@@ -183,5 +256,35 @@ pub fn open_settings(app: &AppHandle) {
         .build();
     if let Err(e) = result {
         crate::log(&format!("settings window: {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Gate;
+
+    #[test]
+    fn a_gateway_login_stays_in_the_window_and_links_do_not() {
+        let mut g = Gate::default();
+        // Opening Bulwark: the gateway redirects to its login, then to the identity provider.
+        assert!(g.navigate(true, true));
+        assert!(g.navigate(false, true));
+        g.loaded(false); // the login page
+        assert!(g.navigate(false, true)); // on to the identity provider
+        assert!(g.navigate(true, true)); // and back
+        g.loaded(true);
+        // From a loaded Bulwark page, another site is a link: the browser's.
+        assert!(!g.navigate(false, true));
+        assert!(!g.navigate(false, true));
+        // A session that ran out: the next load of Bulwark is redirected again.
+        assert!(g.navigate(true, true));
+        assert!(g.navigate(false, true));
+    }
+
+    #[test]
+    fn a_gateway_must_be_https() {
+        let mut g = Gate::default();
+        assert!(g.navigate(true, true));
+        assert!(!g.navigate(false, false));
     }
 }

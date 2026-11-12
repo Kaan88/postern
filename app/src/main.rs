@@ -82,7 +82,7 @@ async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String
 
 fn validate(input: &SettingsInput) -> Result<(), String> {
     auth::secure_url(&input.jmap_url).map_err(|e| format!("Mail server URL {e}"))?;
-    auth::secure_url(&input.viewer_url).map_err(|e| format!("Bulwark URL {e}"))?;
+    auth::secure_url(&input.viewer_url).map_err(|e| format!("Webmail URL {e}"))?;
     Ok(())
 }
 

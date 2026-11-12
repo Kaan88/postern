@@ -1,4 +1,4 @@
-//! Tray icon and menu. Left click opens Bulwark; the menu has the rest.
+//! Tray icon and menu. Left click opens the webmail; the menu has the rest.
 
 use std::sync::{LazyLock, Mutex};
 
@@ -43,18 +43,19 @@ fn icon(status: &Status) -> Image<'static> {
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open Bulwark", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open webmail", true, None::<&str>)?;
     let compose = MenuItem::with_id(app, "compose", "New message", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
     let autostart = CheckMenuItem::with_id(app, "autostart", "Start at login", true, autostart_on, None::<&str>)?;
+    let reset = MenuItem::with_id(app, "reset", "Reset webmail session", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(
         app,
-        &[&status, &sep1, &open, &compose, &sep2, &settings, &autostart, &sep3, &quit],
+        &[&status, &sep1, &open, &compose, &sep2, &settings, &reset, &autostart, &sep3, &quit],
     )?;
 
     TrayIconBuilder::with_id(TRAY_ID)
@@ -66,6 +67,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             "open" => viewer::open(app, ""),
             "compose" => viewer::open_mailto(app, "mailto:"),
             "settings" => viewer::open_settings(app),
+            "reset" => viewer::reset_session(app),
             "autostart" => {
                 let launcher = app.autolaunch();
                 let on = launcher.is_enabled().unwrap_or(false);
