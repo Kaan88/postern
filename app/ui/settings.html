@@ -37,7 +37,7 @@
 <body>
 <h1>Postern</h1>
 <p class="lead">Watches your Inbox and calendar over JMAP push and opens your webmail only while you use it.</p>
-<form id="f" autocomplete="off">
+<form id="f" autocomplete="off" novalidate>
   <fieldset>
     <legend>Mail server</legend>
     <label for="jmap_url">Mail server URL</label>
@@ -96,7 +96,25 @@
     showAccount(signed_in, config.username);
   }).catch((e) => msg(String(e), "err"));
   load();
-  const valid = () => $("f").reportValidity();
+  // An address typed without a scheme gets https://, as soon as the field is left.
+  const withScheme = (v) => { v = v.trim(); return !v || /^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : "https://" + v; };
+  const URLS = [["jmap_url", "Mail server URL"], ["viewer_url", "Webmail URL"]];
+  for (const [id] of URLS) $(id).addEventListener("change", () => { $(id).value = withScheme($(id).value); });
+  // Checked here, with the message on the page: the browser's own validation bubble comes up
+  // empty in WebKitGTK.
+  const valid = () => {
+    for (const [id, name] of URLS) {
+      const v = $(id).value = withScheme($(id).value);
+      let ok = false;
+      try { ok = !!v && !/\s/.test(v) && !!new URL(v).hostname; } catch (_) {}
+      if (!ok) {
+        msg(v ? `${name}: "${v}" is not a web address.` : `${name}: enter an address, like ${$(id).placeholder}.`, "err");
+        $(id).focus();
+        return false;
+      }
+    }
+    return true;
+  };
   $("signin").addEventListener("click", async () => {
     if (!valid()) return;
     $("signin").disabled = true;
@@ -117,6 +135,7 @@
   });
   $("f").addEventListener("submit", async (ev) => {
     ev.preventDefault();
+    if (!valid()) return;
     try { await invoke("save_settings", read()); await load(); msg("Saved.", "ok"); }
     catch (e) { msg(String(e), "err"); }
   });
