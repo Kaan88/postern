@@ -23,6 +23,7 @@
   .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .check label { margin: 0; }
+  .check[hidden] { display: none; }
   .account { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
   .account span { overflow-wrap: anywhere; }
   .row { display: flex; gap: 8px; margin-top: 18px; }
@@ -60,6 +61,7 @@
     <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
     <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
     <div class="hint">Sent by the mail server itself, so they arrive with the webmail closed. Needs calendar alarms enabled on the mail server.</div>
+    <div class="check" id="auto_update_row" hidden><input id="auto_update" type="checkbox"><label for="auto_update">Install updates automatically (you restart to use them)</label></div>
   </fieldset>
   <div class="row">
     <button type="submit">Save</button>
@@ -76,6 +78,7 @@
       viewer_url: $("viewer_url").value.trim(),
       notifications: $("notifications").checked,
       calendar_alerts: $("calendar_alerts").checked,
+      auto_update: $("auto_update").checked,
       keep_viewer_secs: Math.max(0, parseInt($("keep_viewer_secs").value || "0", 10)),
     },
   });
@@ -84,10 +87,12 @@
     $("signin").hidden = signedIn;
     $("signout").hidden = !signedIn;
   };
-  const load = () => invoke("get_settings").then(({ config, signed_in }) => {
+  const load = () => invoke("get_settings").then(({ config, signed_in, self_updating }) => {
     for (const k of ["jmap_url", "viewer_url", "keep_viewer_secs"]) $(k).value = config[k] ?? "";
     $("notifications").checked = !!config.notifications;
     $("calendar_alerts").checked = !!config.calendar_alerts;
+    $("auto_update").checked = !!config.auto_update;
+    $("auto_update_row").hidden = !self_updating; // AppImage only
     showAccount(signed_in, config.username);
   }).catch((e) => msg(String(e), "err"));
   load();

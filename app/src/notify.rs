@@ -1,5 +1,5 @@
 //! Toasts for new mail and calendar/task reminders. A click opens the message or event in the
-//! viewer (Windows; elsewhere the toast is informational for now).
+//! viewer (Windows and Linux; on macOS the toast is informational for now).
 
 use tauri::AppHandle;
 
@@ -25,7 +25,8 @@ pub fn calendar_alert(app: &AppHandle, item: crate::calendar::Item, event_id: St
     show(app, &item.title, &item.when, &item.location, Some(target));
 }
 
-/// What a click on the toast opens.
+/// What a click on the toast opens. Unread on macOS, where the toast is informational.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub enum Target {
     Message(String),
     Event(String),
@@ -87,7 +88,67 @@ fn windows_app_id(app: &AppHandle) -> String {
     }
 }
 
-#[cfg(not(windows))]
+/// XDG notification: a "default" action is what a click on the body sends. Servers that don't
+/// support actions just show the notification.
+#[cfg(target_os = "linux")]
+fn show(app: &AppHandle, title: &str, line1: &str, line2: &str, target: Option<Target>) {
+    let body = if line2.is_empty() { line1.to_string() } else { format!("{line1}\n{line2}") };
+    // The body is markup to most servers (links, images), and here it is a stranger's subject
+    // and preview: shown as text, never as markup.
+    let body = body.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let (title, app) = (title.to_string(), app.clone());
+    // wait_for_action blocks until the notification is clicked, closed or expires, so each one
+    // gets a thread of its own; that ends with the notification, so they don't accumulate.
+    std::thread::spawn(move || {
+        let shown = notify_rust::Notification::new()
+            .appname(&app.package_info().name)
+            .summary(&title)
+            .body(&body)
+            // The icon the .deb installs (named after the binary) and the Postern.desktop that
+            // Tauri's bundler writes (named after productName), so the shell can match them.
+            .icon("postern")
+            .hint(notify_rust::Hint::DesktopEntry("Postern".into()))
+            .action("default", "Open")
+            .show();
+        match shown {
+            Ok(handle) => handle.wait_for_action(|action| {
+                if action != "default" {
+                    return; // "__closed": dismissed or expired
+                }
+                // Window creation has to happen on the main (GTK) thread.
+                let click = app.clone();
+                let _ = app.run_on_main_thread(move || match &target {
+                    Some(Target::Message(id)) => crate::viewer::open_message(&click, id),
+                    Some(Target::Event(id)) => crate::viewer::open_calendar_item(&click, id, false),
+                    Some(Target::Task) => crate::viewer::open_calendar_item(&click, "", true),
+                    None => crate::viewer::open(&click, "mail"),
+                });
+            }),
+            Err(e) => crate::log(&format!("notification: {e}")),
+        }
+    });
+}
+
+/// A plain notification: no click action. Only the updater uses it.
+#[cfg(target_os = "linux")]
+pub fn info(app: &AppHandle, title: &str, body: &str) {
+    let (title, body, name) = (title.to_string(), body.to_string(), app.package_info().name.clone());
+    // show() talks to the notification server over D-Bus: not for the main thread.
+    std::thread::spawn(move || {
+        let shown = notify_rust::Notification::new()
+            .appname(&name)
+            .summary(&title)
+            .body(&body)
+            .icon("postern")
+            .hint(notify_rust::Hint::DesktopEntry("Postern".into()))
+            .show();
+        if let Err(e) = shown {
+            crate::log(&format!("notification: {e}"));
+        }
+    });
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn show(_app: &AppHandle, title: &str, line1: &str, line2: &str, _target: Option<Target>) {
     let body = if line2.is_empty() { line1.to_string() } else { format!("{line1}\n{line2}") };
     if let Err(e) = notify_rust::Notification::new().summary(title).body(&body).show() {

@@ -4,7 +4,7 @@ The user-facing overview is in [../README.md](../README.md). This file covers ho
 
 A small resident app for a Stalwart (JMAP) account. It sits in the tray, gets new-mail push and calendar/task reminders straight from the server, and opens your hosted Bulwark in a webview only while you use it. Closing the window frees the webview completely; the tray process stays at a few MB. Background: [../FEASIBILITY.md](../FEASIBILITY.md) option D.
 
-The log (connection, each push event, each alert and toast; no addresses, names or subjects) goes to stderr with `cargo run` and to `%LOCALAPPDATA%\app.postern\logs\postern.log`, which starts over past 1 MB.
+The log (connection, each push event, each alert and toast; no addresses, names or subjects) goes to stderr with `cargo run` and to `%LOCALAPPDATA%\app.postern\logs\postern.log` (Linux: `~/.local/share/app.postern/logs/postern.log`), which starts over past 1 MB.
 
 ## What it does
 
@@ -45,6 +45,20 @@ powershell -File scripts/release.ps1 -Arch x64
 
 ARM64 needs Visual Studio's "MSVC ARM64 build tools" (the TLS library aws-lc compiles C code); the GitHub workflow builds it on a Windows ARM runner. Icons and installer bitmaps come from `scripts/make-icons.py`, then `cargo tauri icon icons/icon-1024.png -o icons`.
 
+## Linux
+
+- **Packages:** `scripts/release.sh [deb] [rpm] [appimage]` builds for the host architecture into `dist/<version>/`; the Linux bundle settings are in `tauri.linux.conf.json`, which Tauri merges over `tauri.conf.json` on Linux only. Build needs WebKitGTK 4.1 and an appindicator library (ayatana or libappindicator; the package depends on whichever the build machine had, ayatana in CI). The AppImage is about 110 MB because it carries WebKitGTK.
+- **Tray:** a StatusNotifierItem. It has no click events and no tooltip there, so "Open webmail" and the status line in the menu stand in for them.
+- **Notifications** (`src/notify.rs`): XDG notifications with a default action, so a click opens the message or event. Subject and preview are escaped: the notification body is markup to most servers.
+- **Web processes** (`src/viewer.rs`): Tauri keeps one WebKit context for the life of the app on Linux, and WebKitGTK left one web process (200 MB and more) behind per window opened. Postern ends a window's web process when the window closes. The shared WebKitNetworkProcess (about 70 MB) stays until Postern quits.
+- **AppImage menu entry** (`src/appimage.rs`): on start, an AppImage writes `Postern.desktop` and its icons under `~/.local/share`, only when they differ, and fixes the entry after the file is moved. It never touches a `Postern.desktop` it didn't write (its own carries `X-Postern-AppImage=true`).
+- **AppImage self-update** (`src/updates.rs`): Tauri's updater plugin, registered only when running as an AppImage. It reads `latest.json` from the latest published GitHub release a minute after start and then daily, takes only a strictly newer version whose minisign signature matches the public key in `tauri.linux.conf.json` (and whose signed version matches the announced one), and writes it over the AppImage file, so its path, the menu entry and "Start at login" stay valid. Nothing restarts by itself. The download is held in memory while it is checked. Tag builds sign with the `TAURI_SIGNING_PRIVATE_KEY` repository secret; hand-run builds are not signed. Losing that key means existing AppImages can never update again.
+- **"Running as an AppImage"** means `APPIMAGE` is set *and* Postern's own executable is inside `APPDIR`. The variables alone are inherited by anything an AppImage starts, and trusting them would let an update overwrite another program's file.
+
+Verified on CachyOS, KDE Plasma 6 on Wayland (2026-11-14): builds with no warnings and tests pass; tray registers and its menu items work (driven over D-Bus); settings and viewer windows open; a second launch reaches the running copy; web processes end within 10 s of closing a window; deb, rpm and AppImage build; the AppImage writes its menu entry once and leaves it alone afterwards; a local signed update was downloaded, installed over the file and restarted into, while a tampered file, a foreign signature, a mismatched version and an equal or older version were all refused.
+
+Not yet verified on Linux: a real sign-in and push against Stalwart; clicking a notification (the request with its action was seen on D-Bus, the click was not); the settings checkbox for updates by eye; GNOME and X11; arm64 and the CI builds on Ubuntu 22.04; an AppImage started through FUSE (tests used extract-and-run); "Start at login" (and it breaks if the AppImage path has spaces, a bug in the autostart library); window position on Wayland (only size is restored).
+
 Without the installed shortcut (NSIS: `Start Menu\Programs\Postern.lnk`; MSI: `Start Menu\Programs\Postern\Postern.lnk`), toasts appear under PowerShell's name (see `src/notify.rs`).
 
 ## Status
@@ -66,4 +80,4 @@ Not yet verified:
 - tray menu clicks;
 - acknowledging a reminder back to the server (not implemented, so Bulwark may show it again if it's open);
 - registering as the system mailto: handler (not implemented);
-- macOS and Linux.
+- macOS; Linux as listed in the Linux section.

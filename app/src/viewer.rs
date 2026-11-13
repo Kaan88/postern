@@ -79,10 +79,24 @@ impl Gate {
     }
 }
 
+/// WebKitGTK keeps a window's web process (hundreds of MB) running after the window is gone,
+/// one more per open (tauri-runtime-wry holds the shared WebContext for the life of the app).
+/// Ending it here is what WebView2 does by itself on Windows.
+fn end_web_process(w: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    let _ = w.with_webview(|webview| {
+        use webkit2gtk::WebViewExt;
+        webview.inner().terminate_web_process();
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = w;
+}
+
 /// Closes the viewer for good (e.g. its URL changed: it must be rebuilt for the new origin).
 pub fn destroy(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(LABEL) {
         HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
+        end_web_process(&w);
         let _ = w.destroy();
     }
 }
@@ -172,15 +186,19 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
             return;
         }
         if let WindowEvent::CloseRequested { api, .. } = event {
-            if let Some(w) = handle.get_webview_window(LABEL) {
-                crate::window_state::track(&w, true);
-            }
+            let Some(w) = handle.get_webview_window(LABEL) else { return };
+            crate::window_state::track(&w, true);
             let keep = handle.state::<AppState>().config.lock().unwrap().keep_viewer_secs;
             if keep == 0 {
+                if cfg!(target_os = "linux") {
+                    // Stop the web process first, then close the window ourselves.
+                    api.prevent_close();
+                    end_web_process(&w);
+                    let _ = w.destroy();
+                }
                 return; // default close: the window and its WebView are destroyed
             }
             api.prevent_close();
-            let Some(w) = handle.get_webview_window(LABEL) else { return };
             let _ = w.hide();
             let generation = HIDE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
             let handle = handle.clone();
@@ -191,6 +209,7 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
                 }
                 if let Some(w) = handle.get_webview_window(LABEL) {
                     if !w.is_visible().unwrap_or(true) {
+                        end_web_process(&w);
                         let _ = w.destroy();
                     }
                 }
@@ -226,6 +245,7 @@ pub fn open_mailto(app: &AppHandle, mailto: &str) {
     open(app, &format!("protocol/mailto?{}", path.query().unwrap_or_default()));
 }
 
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn open_message(app: &AppHandle, email_id: &str) {
     let mut u = Url::parse("http://x/mail/message/").expect("static url");
     u.path_segments_mut().expect("base").pop_if_empty().push(email_id);
@@ -233,6 +253,7 @@ pub fn open_message(app: &AppHandle, email_id: &str) {
 }
 
 /// A calendar alert: the event itself, or the task list for a task.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn open_calendar_item(app: &AppHandle, event_id: &str, is_task: bool) {
     if is_task {
         open(app, "calendar/tasks");
@@ -254,8 +275,19 @@ pub fn open_settings(app: &AppHandle) {
         .inner_size(520.0, 860.0)
         .resizable(false)
         .build();
-    if let Err(e) = result {
-        crate::log(&format!("settings window: {e}"));
+    match result {
+        Ok(window) if cfg!(target_os = "linux") => {
+            let w = window.clone();
+            window.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    end_web_process(&w);
+                    let _ = w.destroy();
+                }
+            });
+        }
+        Ok(_) => {}
+        Err(e) => crate::log(&format!("settings window: {e}")),
     }
 }
 

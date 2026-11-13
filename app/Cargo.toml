@@ -40,6 +40,10 @@ keyring = { version = "3", features = ["apple-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Already in the tree through wry; named here to end the web process when the viewer closes.
+webkit2gtk = "2"
+# Self-update of the AppImage only; deb and rpm are updated by the package manager.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(not(windows))'.dependencies]
 notify-rust = "4"

@@ -1,6 +1,8 @@
-# Builds Postern for Windows x64 and ARM64 and publishes a draft GitHub release, laid out
-# like Bulwark Desktop's: installers, a .sha256 per file, and build provenance attestations
+# Builds Postern for Windows and Linux, x64 and ARM64, and publishes a draft GitHub release, laid out
+# like Bulwark Desktop's: installers (.exe/.msi) and packages (.deb/.rpm/.AppImage), a .sha256 per file, and build provenance attestations
 # (check one with: gh attestation verify <file> --repo <owner>/<repo>).
+# The AppImage updates itself: tag builds sign it with the TAURI_SIGNING_PRIVATE_KEY secret and
+# the release carries a latest.json for its updater.
 # Run it by pushing a tag v<version> matching app/tauri.conf.json; run by hand, it only builds.
 # Actions are pinned to commit SHAs (the tag each one was at is noted alongside).
 name: release
@@ -22,21 +24,56 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x64
+          - platform: windows
+            arch: x64
             runner: windows-latest
-          - arch: arm64
+          - platform: windows
+            arch: arm64
             runner: windows-11-arm
+          # Built on 22.04 rather than latest: the older glibc keeps the packages
+          # installable on more distributions.
+          - platform: linux
+            arch: x64
+            runner: ubuntu-22.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Check the tag matches the app version
-        if: github.ref_type == 'tag'
+        if: github.ref_type == 'tag' && matrix.platform == 'windows'
         shell: pwsh
         run: |
           $version = (Get-Content app/tauri.conf.json | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw "tag $env:GITHUB_REF_NAME does not match app version $version" }
+      - name: Check the tag matches the app version
+        if: github.ref_type == 'tag' && matrix.platform == 'linux'
+        run: |
+          version=$(jq -r .version app/tauri.conf.json)
+          if [ "$GITHUB_REF_NAME" != "v${version}" ]; then
+            echo "tag $GITHUB_REF_NAME does not match app version $version" >&2; exit 1
+          fi
+      # The AppImage updates itself from latest.json and only takes a signed update: a release
+      # without the signature is one the AppImage can't be updated to.
+      - name: Check the update signing key is set
+        if: github.ref_type == 'tag' && matrix.platform == 'linux'
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "the TAURI_SIGNING_PRIVATE_KEY secret is empty: the AppImage could not be offered as an update" >&2; exit 1
+          fi
+      - name: Install the Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential curl wget file patchelf \
+            libssl-dev libxdo-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -51,15 +88,31 @@ jobs:
         working-directory: app
         run: cargo test --locked
       - name: Build installers
+        if: matrix.platform == 'windows'
         run: powershell -File app/scripts/release.ps1 -Arch ${{ matrix.arch }}
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: matrix.platform == 'windows'
         with:
           subject-path: |
             app/dist/*/Postern-*.exe
             app/dist/*/Postern-*.msi
+      - name: Build packages
+        if: matrix.platform == 'linux'
+        env:
+          # Only a release is signed: a hand-run build must not yield an AppImage that passes as an update.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: bash app/scripts/release.sh
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: matrix.platform == 'linux'
+        with:
+          subject-path: |
+            app/dist/*/Postern-*.deb
+            app/dist/*/Postern-*.rpm
+            app/dist/*/Postern-*.AppImage
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: postern-${{ matrix.arch }}
+          name: postern-${{ matrix.platform }}-${{ matrix.arch }}
           path: app/dist/*/*
 
   release:
@@ -77,6 +130,24 @@ jobs:
         with:
           path: out
           merge-multiple: true
+      # What the AppImage's updater reads (see tauri.linux.conf.json). It resolves through
+      # releases/latest/download, so it only works once the draft is published.
+      - name: Write latest.json
+        run: |
+          version=$(jq -r .version app/tauri.conf.json)
+          notes_file="release/v${version}.md"
+          [ -f "$notes_file" ] || notes_file=/dev/null
+          x64_sig=$(cat out/*/"Postern-${version}-x64.AppImage.sig")
+          arm64_sig=$(cat out/*/"Postern-${version}-arm64.AppImage.sig")
+          base="https://github.com/Kaan88/postern/releases/download/v${version}"
+          jq -n --arg version "$version" --rawfile notes "$notes_file" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg x64_sig "$x64_sig" --arg x64_url "$base/Postern-${version}-x64.AppImage" \
+            --arg arm64_sig "$arm64_sig" --arg arm64_url "$base/Postern-${version}-arm64.AppImage" \
+            '{version: $version, notes: $notes, pub_date: $date, platforms: {
+                "linux-x86_64": {signature: $x64_sig, url: $x64_url},
+                "linux-aarch64": {signature: $arm64_sig, url: $arm64_url}}}' > out/latest.json
+          jq . out/latest.json
       - name: Create the draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,5 +158,5 @@ jobs:
           fi
           notes="release/v${version}.md"
           [ -f "$notes" ] || notes=/dev/null
-          gh release create "v${version}" out/*/* \
+          gh release create "v${version}" out/*/* out/latest.json \
             --draft --title "Postern ${version}" --notes-file "$notes" --target "$GITHUB_SHA"

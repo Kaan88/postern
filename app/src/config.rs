@@ -36,6 +36,8 @@ pub struct Config {
     /// Keep the viewer alive (hidden) this many seconds after its window is closed, so a quick
     /// reopen is instant. 0 destroys it at once, which frees all WebView memory.
     pub keep_viewer_secs: u64,
+    /// AppImage only: look for a new version daily and install it in the background.
+    pub auto_update: bool,
 }
 
 /// Also what fields missing from an older config.json fall back to.
@@ -51,6 +53,7 @@ impl Default for Config {
             notifications: true,
             calendar_alerts: true,
             keep_viewer_secs: 0,
+            auto_update: true,
         }
     }
 }

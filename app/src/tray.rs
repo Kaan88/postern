@@ -1,10 +1,14 @@
 //! Tray icon and menu. Left click opens the webmail; the menu has the rest.
+//!
+//! On Linux the tray is a StatusNotifierItem (libappindicator): there are no click events and
+//! no tooltip, so the menu is the only way in. It already carries "Open webmail" and the status
+//! line, which stands in for the tooltip there.
 
 use std::sync::{LazyLock, Mutex};
 
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, Wry,
 };
@@ -16,7 +20,14 @@ const TRAY_ID: &str = "main";
 
 pub struct TrayItems {
     status: MenuItem<Wry>,
+    /// Where "Restart to update" is added once an update is installed.
+    #[cfg(target_os = "linux")]
+    menu: Menu<Wry>,
 }
+
+/// The "Restart to update" item, once there is one.
+#[cfg(target_os = "linux")]
+static RESTART_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
 
 /// Decoded once: plain, unread, offline.
 static ICONS: LazyLock<[Image<'static>; 3]> = LazyLock::new(|| {
@@ -53,10 +64,17 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(
-        app,
-        &[&status, &sep1, &open, &compose, &sep2, &settings, &reset, &autostart, &sep3, &quit],
-    )?;
+    // AppImage only: the others get their updates from the package manager.
+    let check = crate::is_appimage()
+        .then(|| MenuItem::with_id(app, "update_check", "Check for updates", true, None::<&str>))
+        .transpose()?;
+    let mut items: Vec<&dyn IsMenuItem<Wry>> =
+        vec![&status, &sep1, &open, &compose, &sep2, &settings, &reset, &autostart];
+    if let Some(check) = &check {
+        items.push(check);
+    }
+    items.extend([&sep3 as &dyn IsMenuItem<Wry>, &quit]);
+    let menu = Menu::with_items(app, &items)?;
 
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon(&Status::Connecting))
@@ -77,6 +95,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 }
                 let _ = autostart.set_checked(launcher.is_enabled().unwrap_or(false));
             }
+            #[cfg(target_os = "linux")]
+            "update_check" => crate::updates::check_now(app),
+            #[cfg(target_os = "linux")]
+            "update_restart" => app.request_restart(),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -87,8 +109,34 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    app.manage(TrayItems { status });
+    app.manage(TrayItems {
+        status,
+        #[cfg(target_os = "linux")]
+        menu,
+    });
     Ok(())
+}
+
+/// Adds (or re-words) "Restart to update to <version>" right above "Check for updates".
+#[cfg(target_os = "linux")]
+pub fn show_restart(app: &AppHandle, version: &str) {
+    let text = format!("Restart to update to {version}");
+    let handle = app.clone();
+    // Menus are changed on the main (GTK) thread.
+    let _ = app.run_on_main_thread(move || {
+        let mut slot = RESTART_ITEM.lock().unwrap();
+        if let Some(item) = slot.as_ref() {
+            let _ = item.set_text(text);
+            return;
+        }
+        let Some(items) = handle.try_state::<TrayItems>() else { return };
+        let Ok(item) = MenuItem::with_id(&handle, "update_restart", text, true, None::<&str>) else { return };
+        // Third from the end is "Check for updates" (then the separator and Quit).
+        let at = items.menu.items().map_or(0, |all| all.len().saturating_sub(3));
+        if items.menu.insert(&item, at).is_ok() {
+            *slot = Some(item);
+        }
+    });
 }
 
 pub fn set_status(app: &AppHandle, status: &Status) {

@@ -3,11 +3,15 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod appimage;
 mod auth;
 mod calendar;
 mod config;
 mod notify;
 mod tray;
+#[cfg(target_os = "linux")]
+mod updates;
 mod viewer;
 mod viewer_auth;
 mod window_state;
@@ -65,19 +69,30 @@ struct SettingsInput {
     notifications: bool,
     calendar_alerts: bool,
     keep_viewer_secs: u64,
+    auto_update: bool,
 }
 
 #[derive(Serialize)]
 struct SettingsView {
     config: config::Config,
     signed_in: bool,
+    /// Whether the page should offer the automatic-update setting.
+    self_updating: bool,
+}
+
+/// Running as an AppImage, which is where the menu entry and self-update apply.
+pub fn is_appimage() -> bool {
+    #[cfg(target_os = "linux")]
+    return appimage::path().is_some();
+    #[cfg(not(target_os = "linux"))]
+    false
 }
 
 #[tauri::command]
 async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let config = state.config.lock().unwrap().clone();
     let signed_in = auth::is_signed_in(&config);
-    Ok(SettingsView { config, signed_in })
+    Ok(SettingsView { config, signed_in, self_updating: is_appimage() })
 }
 
 fn validate(input: &SettingsInput) -> Result<(), String> {
@@ -100,6 +115,7 @@ async fn apply(app: &AppHandle, input: SettingsInput) -> Result<config::Config, 
         notifications: input.notifications,
         calendar_alerts: input.calendar_alerts,
         keep_viewer_secs: input.keep_viewer_secs.min(3600),
+        auto_update: input.auto_update,
         ..current
     };
     if server_changed {
@@ -189,13 +205,18 @@ fn mailto_arg(args: &[String]) -> Option<&str> {
 }
 
 fn main() {
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // A second launch (e.g. the OS opening a mailto: link) is handed to the running copy.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| match mailto_arg(&args) {
             Some(m) => viewer::open_mailto(app, m),
             None => viewer::open(app, ""),
         }))
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None));
+    // Its endpoint and public key are in tauri.linux.conf.json. The deb and rpm are updated by
+    // the package manager, so only an AppImage gets the plugin.
+    #[cfg(target_os = "linux")]
+    let builder = if is_appimage() { builder.plugin(tauri_plugin_updater::Builder::new().build()) } else { builder };
+    let app = builder
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
@@ -208,6 +229,8 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
             init_log(&handle);
+            #[cfg(target_os = "linux")]
+            appimage::integrate();
             config::migrate_legacy(&handle);
             let cfg = config::load(&handle);
             let complete = cfg.is_complete() && auth::is_signed_in(&cfg) && !cfg.viewer_url.trim().is_empty();
@@ -220,6 +243,10 @@ fn main() {
 
             tray::build(&handle)?;
             watcher::spawn(handle.clone(), restart);
+            #[cfg(target_os = "linux")]
+            if is_appimage() {
+                updates::spawn(handle.clone());
+            }
 
             let args: Vec<String> = std::env::args().collect();
             if let Some(m) = mailto_arg(&args) {
