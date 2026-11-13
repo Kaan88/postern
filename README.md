@@ -42,7 +42,7 @@ Use Bulwark Desktop if you want a full mail client on your desktop. Use Postern 
 - **Stalwart** with OAuth (on by default) and, for reminders, calendar alarms turned on (web admin › Calendar › Alarms; the "Enable E-mail Alarms" switch turns on all alarms). Only DISPLAY alarms are pushed.
 - **Bulwark Mail** hosted somewhere you can reach. For browser sign-in, the instance must allow it (the `desktopBrowserSignIn` admin setting, on by default).
 - **Windows 10 1809 or later** with the WebView2 runtime (built into Windows 11), or
-- **Linux** with WebKitGTK 4.1, a tray that shows StatusNotifier/AppIndicator icons (KDE Plasma does; GNOME needs the AppIndicator extension) and a Secret Service keyring. On Linux the tray icon has no left click or tooltip: everything is in its menu.
+- **Linux** with WebKitGTK 4.1, a tray that shows StatusNotifier/AppIndicator icons (KDE Plasma does; GNOME needs the AppIndicator extension) and a Secret Service keyring.
 
 ## Install
 
@@ -62,13 +62,13 @@ Check a Linux download with `sha256sum -c Postern-<version>-x64.AppImage.sha256`
 The Windows installers are not code-signed yet, so Windows SmartScreen will warn you. Check the download against its `.sha256` file first:
 
 ```powershell
-(Get-FileHash .\Postern-Setup-0.3.0-x64.exe -Algorithm SHA256).Hash
+(Get-FileHash .\Postern-Setup-0.3.1-x64.exe -Algorithm SHA256).Hash
 ```
 
 Or, with the [GitHub CLI](https://cli.github.com/), check that it was built by this repository's release workflow:
 
 ```bash
-gh attestation verify Postern-Setup-0.3.0-x64.exe --repo Kaan88/postern
+gh attestation verify Postern-Setup-0.3.1-x64.exe --repo Kaan88/postern
 ```
 
 To uninstall, sign out in Settings first, so the token is revoked and removed from Windows Credential Manager; then remove Postern from Windows Settings › Apps. Your settings stay in `%APPDATA%\app.postern` until you delete that folder. On Linux, remove the package, or delete the AppImage together with `~/.local/share/applications/Postern.desktop` and the `postern.png` icons under `~/.local/share/icons/hicolor`; settings are in `~/.config/app.postern` and data in `~/.local/share/app.postern`.

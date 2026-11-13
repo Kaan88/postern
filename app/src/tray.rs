@@ -1,33 +1,21 @@
 //! Tray icon and menu. Left click opens the webmail; the menu has the rest.
 //!
-//! On Linux the tray is a StatusNotifierItem (libappindicator): there are no click events and
-//! no tooltip, so the menu is the only way in. It already carries "Open webmail" and the status
-//! line, which stands in for the tooltip there.
+//! This file holds what every platform shares: the status wording, the icons and what a menu
+//! item does. Windows and macOS use Tauri's tray (`native` below); Linux has its own
+//! StatusNotifierItem in tray_linux.rs, because the libappindicator one Tauri uses there has no
+//! click events (the host opens the menu on left click) and no tooltip.
 
 use std::sync::{LazyLock, Mutex};
 
-use tauri::{
-    image::Image,
-    menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, Wry,
-};
+use tauri::{image::Image, AppHandle};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{viewer, watcher::Status};
 
-const TRAY_ID: &str = "main";
-
-pub struct TrayItems {
-    status: MenuItem<Wry>,
-    /// Where "Restart to update" is added once an update is installed.
-    #[cfg(target_os = "linux")]
-    menu: Menu<Wry>,
-}
-
-/// The "Restart to update" item, once there is one.
 #[cfg(target_os = "linux")]
-static RESTART_ITEM: Mutex<Option<MenuItem<Wry>>> = Mutex::new(None);
+pub use crate::tray_linux::show_restart;
+#[cfg(target_os = "linux")]
+use crate::tray_linux as native;
 
 /// Decoded once: plain, unread, offline.
 static ICONS: LazyLock<[Image<'static>; 3]> = LazyLock::new(|| {
@@ -42,7 +30,7 @@ static ICONS: LazyLock<[Image<'static>; 3]> = LazyLock::new(|| {
 /// The last status shown, so a refresh that changes nothing doesn't touch the tray.
 static SHOWN: Mutex<Option<Status>> = Mutex::new(None);
 
-fn icon(status: &Status) -> Image<'static> {
+pub(crate) fn icon(status: &Status) -> Image<'static> {
     let i = match status {
         Status::Online { unread } if *unread > 0 => 1,
         // Connecting is normal (start-up, token renewal): not worth the offline look.
@@ -52,91 +40,49 @@ fn icon(status: &Status) -> Image<'static> {
     ICONS[i].clone()
 }
 
-pub fn build(app: &AppHandle) -> tauri::Result<()> {
-    let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open webmail", true, None::<&str>)?;
-    let compose = MenuItem::with_id(app, "compose", "New message", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
-    let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
-    let autostart = CheckMenuItem::with_id(app, "autostart", "Start at login", true, autostart_on, None::<&str>)?;
-    let reset = MenuItem::with_id(app, "reset", "Reset webmail session", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    let sep2 = PredefinedMenuItem::separator(app)?;
-    let sep3 = PredefinedMenuItem::separator(app)?;
-    // AppImage only: the others get their updates from the package manager.
-    let check = crate::is_appimage()
-        .then(|| MenuItem::with_id(app, "update_check", "Check for updates", true, None::<&str>))
-        .transpose()?;
-    let mut items: Vec<&dyn IsMenuItem<Wry>> =
-        vec![&status, &sep1, &open, &compose, &sep2, &settings, &reset, &autostart];
-    if let Some(check) = &check {
-        items.push(check);
+pub(crate) fn status_text(status: &Status) -> String {
+    match status {
+        Status::NotConfigured => "Not set up: open Settings".to_string(),
+        Status::Connecting => "Connecting…".to_string(),
+        Status::Online { unread: 0 } => "No unread mail".to_string(),
+        Status::Online { unread: 1 } => "1 unread message".to_string(),
+        Status::Online { unread } => format!("{unread} unread messages"),
+        Status::Offline(e) => format!("Offline: {}", e.chars().take(80).collect::<String>()),
+        Status::AuthFailed => "Sign-in failed: check Settings".to_string(),
     }
-    items.extend([&sep3 as &dyn IsMenuItem<Wry>, &quit]);
-    let menu = Menu::with_items(app, &items)?;
-
-    TrayIconBuilder::with_id(TRAY_ID)
-        .icon(icon(&Status::Connecting))
-        .tooltip("Postern")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => viewer::open(app, ""),
-            "compose" => viewer::open_mailto(app, "mailto:"),
-            "settings" => viewer::open_settings(app),
-            "reset" => viewer::reset_session(app),
-            "autostart" => {
-                let launcher = app.autolaunch();
-                let on = launcher.is_enabled().unwrap_or(false);
-                let result = if on { launcher.disable() } else { launcher.enable() };
-                if let Err(e) = result {
-                    crate::log(&format!("autostart: {e}"));
-                }
-                let _ = autostart.set_checked(launcher.is_enabled().unwrap_or(false));
-            }
-            #[cfg(target_os = "linux")]
-            "update_check" => crate::updates::check_now(app),
-            #[cfg(target_os = "linux")]
-            "update_restart" => app.request_restart(),
-            "quit" => app.exit(0),
-            _ => {}
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                viewer::open(tray.app_handle(), "");
-            }
-        })
-        .build(app)?;
-
-    app.manage(TrayItems {
-        status,
-        #[cfg(target_os = "linux")]
-        menu,
-    });
-    Ok(())
 }
 
-/// Adds (or re-words) "Restart to update to <version>" right above "Check for updates".
-#[cfg(target_os = "linux")]
-pub fn show_restart(app: &AppHandle, version: &str) {
-    let text = format!("Restart to update to {version}");
-    let handle = app.clone();
-    // Menus are changed on the main (GTK) thread.
-    let _ = app.run_on_main_thread(move || {
-        let mut slot = RESTART_ITEM.lock().unwrap();
-        if let Some(item) = slot.as_ref() {
-            let _ = item.set_text(text);
-            return;
+/// Whether "Start at login" is on right now.
+pub(crate) fn autostart_on(app: &AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+/// What a menu item does, by its id. Runs on the main thread. The caller refreshes the
+/// "Start at login" checkmark afterwards.
+pub(crate) fn on_menu_event(app: &AppHandle, id: &str) {
+    match id {
+        "open" => viewer::open(app, ""),
+        "compose" => viewer::open_mailto(app, "mailto:"),
+        "settings" => viewer::open_settings(app),
+        "reset" => viewer::reset_session(app),
+        "autostart" => {
+            let launcher = app.autolaunch();
+            let result = if autostart_on(app) { launcher.disable() } else { launcher.enable() };
+            if let Err(e) = result {
+                crate::log(&format!("autostart: {e}"));
+            }
         }
-        let Some(items) = handle.try_state::<TrayItems>() else { return };
-        let Ok(item) = MenuItem::with_id(&handle, "update_restart", text, true, None::<&str>) else { return };
-        // Third from the end is "Check for updates" (then the separator and Quit).
-        let at = items.menu.items().map_or(0, |all| all.len().saturating_sub(3));
-        if items.menu.insert(&item, at).is_ok() {
-            *slot = Some(item);
-        }
-    });
+        #[cfg(target_os = "linux")]
+        "update_check" => crate::updates::check_now(app),
+        #[cfg(target_os = "linux")]
+        "update_restart" => app.request_restart(),
+        "quit" => app.exit(0),
+        _ => {}
+    }
+}
+
+pub fn build(app: &AppHandle) -> tauri::Result<()> {
+    native::build(app)
 }
 
 pub fn set_status(app: &AppHandle, status: &Status) {
@@ -147,20 +93,71 @@ pub fn set_status(app: &AppHandle, status: &Status) {
         }
         *shown = Some(status.clone());
     }
-    let text = match status {
-        Status::NotConfigured => "Not set up: open Settings".to_string(),
-        Status::Connecting => "Connecting…".to_string(),
-        Status::Online { unread: 0 } => "No unread mail".to_string(),
-        Status::Online { unread: 1 } => "1 unread message".to_string(),
-        Status::Online { unread } => format!("{unread} unread messages"),
-        Status::Offline(e) => format!("Offline: {}", e.chars().take(80).collect::<String>()),
-        Status::AuthFailed => "Sign-in failed: check Settings".to_string(),
+    native::set_status(app, status, status_text(status));
+}
+
+#[cfg(not(target_os = "linux"))]
+mod native {
+    use tauri::{
+        menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem},
+        tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+        AppHandle, Manager, Wry,
     };
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(Some(icon(status)));
-        let _ = tray.set_tooltip(Some(format!("Postern: {text}")));
+
+    use super::{autostart_on, icon, on_menu_event};
+    use crate::{viewer, watcher::Status};
+
+    const TRAY_ID: &str = "main";
+
+    pub struct TrayItems {
+        status: MenuItem<Wry>,
     }
-    if let Some(items) = app.try_state::<TrayItems>() {
-        let _ = items.status.set_text(text);
+
+    pub fn build(app: &AppHandle) -> tauri::Result<()> {
+        let status = MenuItem::with_id(app, "status", "Starting…", false, None::<&str>)?;
+        let open = MenuItem::with_id(app, "open", "Open webmail", true, None::<&str>)?;
+        let compose = MenuItem::with_id(app, "compose", "New message", true, None::<&str>)?;
+        let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+        let autostart =
+            CheckMenuItem::with_id(app, "autostart", "Start at login", true, autostart_on(app), None::<&str>)?;
+        let reset = MenuItem::with_id(app, "reset", "Reset webmail session", true, None::<&str>)?;
+        let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+        let sep1 = PredefinedMenuItem::separator(app)?;
+        let sep2 = PredefinedMenuItem::separator(app)?;
+        let sep3 = PredefinedMenuItem::separator(app)?;
+        let items: [&dyn IsMenuItem<Wry>; 10] =
+            [&status, &sep1, &open, &compose, &sep2, &settings, &reset, &autostart, &sep3, &quit];
+        let menu = Menu::with_items(app, &items)?;
+
+        TrayIconBuilder::with_id(TRAY_ID)
+            .icon(icon(&Status::Connecting))
+            .tooltip("Postern")
+            .menu(&menu)
+            .show_menu_on_left_click(false)
+            .on_menu_event(move |app, event| {
+                on_menu_event(app, event.id().as_ref());
+                if event.id().as_ref() == "autostart" {
+                    let _ = autostart.set_checked(autostart_on(app));
+                }
+            })
+            .on_tray_icon_event(|tray, event| {
+                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                    viewer::open(tray.app_handle(), "");
+                }
+            })
+            .build(app)?;
+
+        app.manage(TrayItems { status });
+        Ok(())
+    }
+
+    pub fn set_status(app: &AppHandle, status: &Status, text: String) {
+        if let Some(tray) = app.tray_by_id(TRAY_ID) {
+            let _ = tray.set_icon(Some(icon(status)));
+            let _ = tray.set_tooltip(Some(format!("Postern: {text}")));
+        }
+        if let Some(items) = app.try_state::<TrayItems>() {
+            let _ = items.status.set_text(text);
+        }
     }
 }

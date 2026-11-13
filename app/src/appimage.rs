@@ -92,7 +92,7 @@ fn desktop_entry(appimage: &Path) -> Option<String> {
          Comment=Postern: a light tray companion for Bulwark Mail\n\
          Exec={}\n\
          TryExec={}\n\
-         StartupWMClass=postern\n\
+         StartupWMClass=Postern\n\
          Icon=postern\n\
          Name=Postern\n\
          Terminal=false\n\
@@ -149,7 +149,7 @@ mod tests {
         assert!(d.starts_with("[Desktop Entry]\n"));
         assert!(d.contains("\nExec=\"/opt/My Apps/Postern.AppImage\"\n"));
         assert!(d.contains("\nTryExec=/opt/My Apps/Postern.AppImage\n"));
-        assert!(d.contains("\nIcon=postern\n") && d.contains("\nStartupWMClass=postern\n"));
+        assert!(d.contains("\nIcon=postern\n") && d.contains("\nStartupWMClass=Postern\n"));
         assert!(d.contains("\nName=Postern\n") && d.ends_with(&format!("\n{MARKER}\n")));
     }
 

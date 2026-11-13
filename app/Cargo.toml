@@ -1,6 +1,6 @@
 [package]
 name = "postern"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 description = "Postern: a light tray companion for Bulwark Mail on Stalwart"
 license = "MIT"
@@ -12,6 +12,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# "tray-icon" stays on for every platform although Linux uses its own tray (src/tray_linux.rs):
+# the tauri CLI reads features from every dependency table and adds libappindicator to the
+# packages whenever it sees this one, and cargo rejects the same crate under two names.
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
@@ -42,6 +45,8 @@ keyring = { version = "3", features = ["apple-native"] }
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 # Already in the tree through wry; named here to end the web process when the viewer closes.
 webkit2gtk = "2"
+# The tray: a StatusNotifierItem on the session bus (zbus, already in the tree).
+ksni = "0.3.7"
 # Self-update of the AppImage only; deb and rpm are updated by the package manager.
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 
