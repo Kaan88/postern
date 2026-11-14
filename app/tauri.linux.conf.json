@@ -1,6 +1,10 @@
 {
   "bundle": {
-    "targets": ["deb", "rpm", "appimage"],
+    "targets": [
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "linux": {
       "deb": {
         "section": "mail",
@@ -8,12 +12,17 @@
       },
       "rpm": {
         "desktopTemplate": "installer/postern.desktop"
+      },
+      "appimage": {
+        "bundleMediaFramework": true
       }
     }
   },
   "plugins": {
     "updater": {
-      "endpoints": ["https://github.com/Kaan88/postern/releases/latest/download/latest.json"],
+      "endpoints": [
+        "https://github.com/Kaan88/postern/releases/latest/download/latest.json"
+      ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE4MzJCOUJEOTQyNzE0OTAKUldTUUZDZVV2Ymt5R0FmczBoc2J6V3hOaGdhNVJGYUx0ejNkSXpXbkVWVHdsbUFxd1k1ME5peHgK",
       "requireSignedVersion": true
     }
