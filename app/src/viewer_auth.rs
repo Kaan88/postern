@@ -53,6 +53,27 @@ const MIN_OPEN_INTERVAL: Duration = Duration::from_secs(3);
 static LAST_BEGIN: Mutex<Option<Instant>> = Mutex::new(None);
 const MIN_BEGIN_INTERVAL: Duration = Duration::from_millis(500);
 
+/// WebKitGTK's Ed25519 (libgcrypt) breaks on long messages: a wrong answer from a little under
+/// 64 KiB, and at 64 KiB a crash of the page's process with the libgcrypt 1.9 of the AppImage
+/// (seen 2026-11-14: Bulwark checks each managed plugin bundle this way, and the window went
+/// blank on every load). Refusing those calls makes the page use its own JavaScript verifier,
+/// which is what it does in any browser without Ed25519. Short messages stay native.
+const WEBKIT_ED25519_GUARD: &str = if cfg!(target_os = "linux") {
+    r#"try {
+    const S = window.SubtleCrypto && SubtleCrypto.prototype;
+    const big = (alg, data) => String(typeof alg === "string" ? alg : alg && alg.name).toLowerCase() === "ed25519"
+      && ((data && data.byteLength) || 0) > 32768;
+    const refuse = () => Promise.reject(new DOMException("Ed25519 over a long message is unreliable here", "NotSupportedError"));
+    if (S) {
+      const verify = S.verify, sign = S.sign;
+      S.verify = function (alg, key, signature, data) { return big(alg, data) ? refuse() : verify.apply(this, arguments); };
+      S.sign = function (alg, key, data) { return big(alg, data) ? refuse() : sign.apply(this, arguments); };
+    }
+  } catch (_) {}"#
+} else {
+    ""
+};
+
 /// Runs in the viewer before Bulwark's own scripts, on every page load (main frame only), and
 /// does nothing on any origin but Bulwark's (`origin`, e.g. `https://webmail.example.com`).
 pub fn init_script(origin: &str) -> String {
@@ -71,6 +92,7 @@ pub fn init_script(origin: &str) -> String {
   // happen in the browser this window opens, not in here: the flag Bulwark's own loop guard
   // checks keeps this window on its login page, with "Sign in with your browser".
   try {{ sessionStorage.setItem("sso_attempted", "1"); }} catch (_) {{}}
+  {WEBKIT_ED25519_GUARD}
   if (window.bulwarkDesktop || !window.__TAURI_INTERNALS__) return;
   const call = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {{}})
     .catch((e) => ({{ ok: false, error: String(e) }}));

@@ -62,13 +62,13 @@ Check a Linux download with `sha256sum -c Postern-<version>-x64.AppImage.sha256`
 The Windows installers are not code-signed yet, so Windows SmartScreen will warn you. Check the download against its `.sha256` file first:
 
 ```powershell
-(Get-FileHash .\Postern-Setup-0.3.1-x64.exe -Algorithm SHA256).Hash
+(Get-FileHash .\Postern-Setup-0.3.2-x64.exe -Algorithm SHA256).Hash
 ```
 
 Or, with the [GitHub CLI](https://cli.github.com/), check that it was built by this repository's release workflow:
 
 ```bash
-gh attestation verify Postern-Setup-0.3.1-x64.exe --repo Kaan88/postern
+gh attestation verify Postern-Setup-0.3.2-x64.exe --repo Kaan88/postern
 ```
 
 To uninstall, sign out in Settings first, so the token is revoked and removed from Windows Credential Manager; then remove Postern from Windows Settings › Apps. Your settings stay in `%APPDATA%\app.postern` until you delete that folder. On Linux, remove the package, or delete the AppImage together with `~/.local/share/applications/Postern.desktop` and the `postern.png` icons under `~/.local/share/icons/hicolor`; settings are in `~/.config/app.postern` and data in `~/.local/share/app.postern`.
@@ -97,7 +97,7 @@ Technical notes are in [app/README.md](app/README.md), and the design background
 
 ## Audit
 
-Postern 0.2.0 was reviewed before release by Fable (Anthropic's Claude Fable 5.2): two passes covering correctness, security, reliability and performance. Everything added since then, up to 0.3.1 (the Linux version, the AppImage's self-update and the Cloudflare Access sign-in), was reviewed again by Fable with security first. That review led to three fixes: notification text from mail is no longer treated as markup, a Postern started by another AppImage no longer mistakes that program's file for its own, and only release builds are signed for the updater. Every finding was fixed or is listed as a known limitation in the [technical notes](app/README.md).
+Postern 0.2.0 was reviewed before release by Fable (Anthropic's Claude Fable 5.2): two passes covering correctness, security, reliability and performance. Everything added since then, up to 0.3.2 (the Linux version, the AppImage's self-update and the Cloudflare Access sign-in), was reviewed again by Fable with security first. That review led to three fixes: notification text from mail is no longer treated as markup, a Postern started by another AppImage no longer mistakes that program's file for its own, and only release builds are signed for the updater. Every finding was fixed or is listed as a known limitation in the [technical notes](app/README.md).
 
 ## License
 
