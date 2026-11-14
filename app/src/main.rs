@@ -12,6 +12,8 @@ mod config;
 mod notify;
 mod tray;
 #[cfg(target_os = "linux")]
+mod tray_linux;
+#[cfg(target_os = "linux")]
 mod updates;
 mod viewer;
 mod viewer_auth;
@@ -208,6 +210,11 @@ fn mailto_arg(args: &[String]) -> Option<&str> {
 }
 
 fn main() {
+    // On Wayland the window's app_id is GTK's program name, and the desktop environment finds the
+    // icon and the menu entry by it: "Postern" is what Postern.desktop (deb, rpm, AppImage) and
+    // the notifications' desktop-entry hint are called. Must come before GTK starts.
+    #[cfg(target_os = "linux")]
+    webkit2gtk::glib::set_prgname(Some("Postern"));
     let builder = tauri::Builder::default()
         // A second launch (e.g. the OS opening a mailto: link) is handed to the running copy.
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| match mailto_arg(&args) {

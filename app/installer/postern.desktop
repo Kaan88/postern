@@ -4,7 +4,7 @@ Categories=Network;Email;
 Comment={{comment}}
 {{/if}}
 Exec={{exec}}
-StartupWMClass={{exec}}
+StartupWMClass=Postern
 Icon={{icon}}
 Name={{name}}
 Terminal=false
