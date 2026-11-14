@@ -301,7 +301,7 @@ async fn session(
                         Ok(item) => {
                             crate::log(&format!("  -> {}", if item.is_task { "task" } else { "event" }));
                             notify::calendar_alert(app, item, alert.calendar_event_id.clone());
-                            sound::notify(app);
+                            sound::notify(app, sound::Kind::Reminder);
                         }
                         Err(e) => crate::log(&format!("  -> fetch failed: {e}")),
                     }
@@ -397,7 +397,7 @@ async fn refresh(app: &AppHandle, client: &Client, inbox: &str, seen: &mut Seen,
 
     // One sound for the burst, not one per toast.
     if !emails.is_empty() {
-        sound::notify(app);
+        sound::notify(app, sound::Kind::Mail);
     }
     for e in emails.iter().take(MAX_TOASTS_PER_BURST) {
         let from = e

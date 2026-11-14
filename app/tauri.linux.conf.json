@@ -19,6 +19,12 @@
         "depends": [
           "libasound.so.2()(64bit)"
         ],
+        "recommends": [
+          "gstreamer1-plugins-base",
+          "gstreamer1-plugins-good",
+          "gstreamer-plugins-base",
+          "gstreamer-plugins-good"
+        ],
         "desktopTemplate": "installer/postern.desktop"
       },
       "appimage": {

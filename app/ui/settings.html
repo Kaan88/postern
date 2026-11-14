@@ -10,80 +10,111 @@
     :root { --bg: #1b1b20; --fg: #ececf1; --muted: #9a9aa6; --line: #34343c; --field: #24242b; --accent: #5b8cff; --ok: #4ade80; --err: #f87171; color-scheme: dark; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; padding: 20px 24px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, "Segoe UI", sans-serif; }
-  h1 { font-size: 17px; margin: 0 0 4px; }
-  p.lead { margin: 0 0 18px; color: var(--muted); }
-  fieldset { border: 0; padding: 0; margin: 0 0 16px; }
-  legend { font-weight: 600; margin-bottom: 8px; }
-  label { display: block; margin: 10px 0 4px; }
-  input[type=url], input[type=number] {
-    width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit;
+  body { margin: 0; padding: 2px 20px 12px; background: var(--bg); color: var(--fg); font: 13.5px/1.4 system-ui, "Segoe UI", sans-serif; }
+  form { margin: 0; }
+  .row { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .row[hidden] { display: none; }
+  .line { display: flex; gap: 12px; align-items: center; justify-content: space-between; min-height: 30px; }
+  .line > :first-child { min-width: 0; overflow-wrap: anywhere; }
+  .ctl { display: flex; gap: 6px; align-items: center; flex: none; }
+  .title { font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 1px; overflow-wrap: anywhere; }
+  .sub:empty { display: none; }
+  label { cursor: default; }
+  input[type=url], input[type=number], select {
+    padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit;
   }
-  select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; }
-  .inline { display: flex; gap: 8px; align-items: center; }
+  input[type=url] { width: 230px; }
+  input[type=number] { width: 72px; }
+  select { max-width: 160px; }
   input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
-  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-  .check label { margin: 0; }
-  .check[hidden] { display: none; }
-  .account { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
-  .account span { overflow-wrap: anywhere; }
-  .row { display: flex; gap: 8px; margin-top: 18px; }
-  button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--fg); font: inherit; cursor: pointer; white-space: nowrap; }
+  /* A real checkbox, drawn as a switch: keyboard and screen readers see a checkbox. */
+  input.switch { appearance: none; -webkit-appearance: none; flex: none; position: relative; width: 36px; height: 20px; margin: 0; border-radius: 10px; background: var(--line); cursor: pointer; transition: background .15s; }
+  input.switch::before { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.35); transition: transform .15s; }
+  input.switch:checked { background: var(--accent); }
+  input.switch:checked::before { transform: translateX(16px); }
+  button { padding: 5px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--fg); font: inherit; cursor: pointer; white-space: nowrap; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button:disabled { opacity: .6; cursor: default; }
-  #msg { margin-top: 12px; min-height: 1.4em; }
+  button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 0; width: 30px; height: 30px; }
+  button.icon svg { width: 12px; height: 12px; fill: currentColor; }
+  button:disabled { opacity: .5; cursor: default; }
+  button[hidden] { display: none; }
+  .foot { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding-top: 12px; }
+  .foot .version { color: var(--muted); font-size: 12px; }
+  #msg { margin-top: 10px; min-height: 2.8em; overflow-wrap: anywhere; }
   #msg.ok { color: var(--ok); } #msg.err { color: var(--err); }
 </style>
 </head>
 <body>
-<h1>Postern</h1>
-<p class="lead">Watches your Inbox and calendar over JMAP push and opens your webmail only while you use it.</p>
 <form id="f" autocomplete="off" novalidate>
-  <fieldset>
-    <legend>Mail server</legend>
-    <label for="jmap_url">Mail server URL</label>
-    <input id="jmap_url" type="url" required placeholder="https://mail.example.com">
-    <div class="hint">The server that answers /.well-known/jmap.</div>
-    <div class="account">
-      <span id="account">Not signed in</span>
-      <button type="button" id="signin" class="primary">Sign in</button>
-      <button type="button" id="signout" hidden>Sign out</button>
-    </div>
-    <div class="hint">Opens your browser to sign in on the server itself (OAuth). No password is stored here; only a renewable token, in the system keyring.</div>
-  </fieldset>
-  <fieldset>
-    <legend>Viewer</legend>
-    <label for="viewer_url">Webmail URL</label>
-    <input id="viewer_url" type="url" required placeholder="https://webmail.example.com">
-    <div class="hint">Your hosted webmail. Sign in once in the window it opens, with "Remember me" ticked.</div>
-    <label for="keep_viewer_secs">Keep the window in memory after closing (seconds)</label>
-    <input id="keep_viewer_secs" type="number" min="0" max="3600" step="1">
-    <div class="hint">0 frees all its memory at once; a few minutes makes a quick reopen instant.</div>
-    <div class="check"><input id="access_browser_signin" type="checkbox"><label for="access_browser_signin">Sign in to Cloudflare Access in my browser</label></div>
-    <div class="hint">If your webmail sits behind Cloudflare Access, its login opens in your default browser (where your Google session, passkeys and password manager are) instead of in this window.</div>
-    <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
-    <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
-    <div class="hint">Sent by the mail server itself, so they arrive with the webmail closed. Needs calendar alarms enabled on the mail server.</div>
-    <label for="notification_sound">Notification sound</label>
-    <div class="inline">
-      <select id="notification_sound">
-        <option value="bulwark">Same as Bulwark</option>
-        <option value="off">Off</option>
-        <option value="default">Beep</option>
-        <option value="cheerful">Cheerful</option>
-        <option value="involved">Involved</option>
-        <option value="swift">Swift</option>
-        <option value="relax">Relax</option>
-      </select>
-      <button type="button" id="play_sound">Play</button>
-    </div>
-    <div class="hint" id="sound_hint"></div>
-    <div class="hint">The same sounds as Bulwark. Not played while the webmail window is open: Bulwark plays its own there.</div>
-    <div class="check" id="auto_update_row" hidden><input id="auto_update" type="checkbox"><label for="auto_update">Install updates automatically (you restart to use them)</label></div>
-  </fieldset>
   <div class="row">
-    <button type="submit">Save</button>
+    <div class="line">
+      <div>
+        <div class="title" id="account">Not signed in</div>
+        <div class="sub" id="account_sub"></div>
+      </div>
+      <div class="ctl">
+        <button type="button" id="signin" class="primary">Sign in</button>
+        <button type="button" id="signout" hidden>Sign out</button>
+      </div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="line">
+      <label for="jmap_url">Mail server</label>
+      <input id="jmap_url" type="url" required placeholder="https://mail.example.com">
+    </div>
+  </div>
+  <div class="row">
+    <div class="line">
+      <label for="viewer_url">Webmail</label>
+      <input id="viewer_url" type="url" required placeholder="https://webmail.example.com">
+    </div>
+  </div>
+  <div class="row">
+    <div class="line"><label for="notifications">Notify about new mail</label><input id="notifications" class="switch" type="checkbox"></div>
+  </div>
+  <div class="row">
+    <div class="line"><label for="calendar_alerts">Calendar and task reminders</label><input id="calendar_alerts" class="switch" type="checkbox"></div>
+    <div class="sub">Sent by the mail server, so they need calendar alarms enabled there.</div>
+  </div>
+  <div class="row">
+    <div class="line">
+      <label for="notification_sound">Sound</label>
+      <div class="ctl">
+        <select id="notification_sound">
+          <option value="bulwark">Same as Bulwark</option>
+          <option value="off">Off</option>
+          <option value="default">Beep</option>
+          <option value="cheerful">Cheerful</option>
+          <option value="involved">Involved</option>
+          <option value="swift">Swift</option>
+          <option value="relax">Relax</option>
+        </select>
+        <button type="button" id="play_sound" class="icon" aria-label="Play sound" title="Play sound"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 1l9 5-9 5z"/></svg></button>
+      </div>
+    </div>
+    <div class="sub" id="sound_hint"></div>
+    <div class="sub">Not played while the webmail window is open: Bulwark plays its own there.</div>
+  </div>
+  <div class="row">
+    <div class="line"><label for="access_browser_signin">Cloudflare Access in my browser</label><input id="access_browser_signin" class="switch" type="checkbox"></div>
+    <div class="sub">If your webmail is behind Cloudflare Access, its login opens in your default browser.</div>
+  </div>
+  <div class="row">
+    <div class="line">
+      <label for="keep_viewer_secs">Keep window in memory</label>
+      <div class="ctl"><input id="keep_viewer_secs" type="number" min="0" max="3600" step="1"><span>s</span></div>
+    </div>
+    <div class="sub">0 frees its memory at once.</div>
+  </div>
+  <div class="row" id="auto_update_row" hidden>
+    <div class="line"><label for="auto_update">Update automatically</label><input id="auto_update" class="switch" type="checkbox"></div>
+    <div class="sub">Installs in the background; restart to use the new version.</div>
+  </div>
+  <div class="foot">
+    <span class="version" id="version"></span>
+    <button type="submit" class="primary">Save</button>
   </div>
   <div id="msg" role="status" aria-live="polite"></div>
 </form>
@@ -103,24 +134,31 @@
       keep_viewer_secs: Math.max(0, parseInt($("keep_viewer_secs").value || "0", 10)),
     },
   });
-  const showAccount = (signedIn, username) => {
+  const showAccount = (signedIn, username, jmapUrl) => {
     $("account").textContent = signedIn ? `Signed in${username ? " as " + username : ""}` : "Not signed in";
+    let host = "";
+    try { host = new URL(jmapUrl).host; } catch (_) {}
+    $("account_sub").textContent = signedIn
+      ? `${host ? host + ": " : ""}signed in. No password is stored, only a renewable token in the system keyring.`
+      : `${host ? host + ": " : ""}signing in opens your browser (OAuth). No password is stored here.`;
     $("signin").hidden = signedIn;
     $("signout").hidden = !signedIn;
   };
-  const load = () => invoke("get_settings").then(({ config, signed_in, self_updating }) => {
+  const load = () => invoke("get_settings").then(({ config, signed_in, self_updating, version }) => {
     for (const k of ["jmap_url", "viewer_url", "keep_viewer_secs"]) $(k).value = config[k] ?? "";
     $("notifications").checked = !!config.notifications;
     $("calendar_alerts").checked = !!config.calendar_alerts;
     // A value this page doesn't list (an edited config.json) is shown as, and kept as, Off.
     $("notification_sound").value = config.notification_sound;
     if ($("notification_sound").selectedIndex < 0) $("notification_sound").value = "off";
-    bulwarkSound = config.bulwark_sound;
+    bulwarkSound = config.bulwark_sound ?? "";
+    bulwarkReminders = config.bulwark_reminder_sound ?? "";
     updateSound();
+    $("version").textContent = version ? `Postern ${version}` : "";
     $("auto_update").checked = !!config.auto_update;
     $("access_browser_signin").checked = !!config.access_browser_signin;
     $("auto_update_row").hidden = !self_updating; // AppImage only
-    showAccount(signed_in, config.username);
+    showAccount(signed_in, config.username, config.jmap_url);
   }).catch((e) => msg(String(e), "err"));
   load();
   // An address typed without a scheme gets https://, as soon as the field is left.
@@ -142,16 +180,25 @@
     }
     return true;
   };
-  // What the webmail was last seen to use (Postern learns it while the webmail is open; until
-  // then it assumes Bulwark's own default).
-  let bulwarkSound = "involved";
+  // What the webmail was last seen to use for new mail and for reminders ("" until it has
+  // reported: Postern then assumes Bulwark's own default, Involved).
+  let bulwarkSound = "", bulwarkReminders = "";
   const soundName = (id) => $("notification_sound").querySelector(`option[value="${id}"]`)?.textContent;
+  const effectiveSound = (seen) => seen || "involved";
+  const bulwarkHint = () => {
+    if (!bulwarkSound) return "Not seen yet: uses Involved until the webmail has been opened once.";
+    const name = (id) => soundName(id) ?? "a sound this version doesn't know";
+    const mail = bulwarkSound, rem = effectiveSound(bulwarkReminders);
+    if (mail === rem) return mail === "off" ? "Bulwark's sound is off." : `Bulwark is set to ${name(mail)}.`;
+    return mail === "off" ? `Bulwark's new mail sound is off; reminders use ${name(rem)}.`
+      : rem === "off" ? `Bulwark is set to ${name(mail)}; reminders are silent.`
+      : `Bulwark is set to ${name(mail)} for mail and ${name(rem)} for reminders.`;
+  };
   const updateSound = () => {
     const choice = $("notification_sound").value;
-    const effective = choice === "bulwark" ? bulwarkSound : choice;
+    const effective = choice === "bulwark" ? effectiveSound(bulwarkSound) : choice;
     $("play_sound").disabled = effective === "off" || effective === "bulwark" || !soundName(effective);
-    $("sound_hint").textContent = choice !== "bulwark" ? "" : bulwarkSound === "off" ? "Bulwark's sound is off."
-      : `Bulwark is set to ${soundName(bulwarkSound) ?? "a sound this version doesn't know"}. Until the webmail has been opened once, Involved is assumed.`;
+    $("sound_hint").textContent = choice === "bulwark" ? bulwarkHint() : "";
   };
   $("notification_sound").addEventListener("change", updateSound);
   $("play_sound").addEventListener("click", () => invoke("play_sound", { sound: $("notification_sound").value }).catch((e) => msg(String(e), "err")));

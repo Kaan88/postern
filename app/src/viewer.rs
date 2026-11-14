@@ -160,8 +160,12 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
     crate::access::reset();
     let (loaded_bulwark, loaded_server) = (bulwark.clone(), server.clone());
     crate::viewer_auth::grant(app);
-    let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
-        .initialization_script(crate::viewer_auth::init_script(&bulwark.ascii_serialization()))
+    let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
+        .initialization_script(crate::viewer_auth::init_script(&bulwark.ascii_serialization()));
+    // Every frame, on any origin: a plugin's sandboxed iframe must not reach the Ed25519 crash.
+    #[cfg(target_os = "linux")]
+    let builder = builder.initialization_script_for_all_frames(crate::viewer_auth::WEBKIT_ED25519_GUARD);
+    let window = builder
         // Only Bulwark, its mail server and a sign-in gateway in front of them load in here (see
         // `Gate`); every other link opens in the browser.
         .on_navigation(move |to| {
@@ -327,9 +331,12 @@ pub fn open_settings(app: &AppHandle) {
         let _ = w.set_focus();
         return;
     }
+    // Tall enough for the whole page with room for a three-line message (measured: 647 px of
+    // content, 714 with the AppImage-only update row, plus 19 for the longer message).
+    let height = if crate::is_appimage() { 760.0 } else { 700.0 };
     let result = WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("Postern settings")
-        .inner_size(520.0, 860.0)
+        .inner_size(460.0, height)
         .resizable(false)
         .build();
     match result {

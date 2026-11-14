@@ -84,6 +84,7 @@ struct SettingsView {
     signed_in: bool,
     /// Whether the page should offer the automatic-update setting.
     self_updating: bool,
+    version: String,
 }
 
 /// Running as an AppImage, which is where the menu entry and self-update apply.
@@ -95,20 +96,20 @@ pub fn is_appimage() -> bool {
 }
 
 #[tauri::command]
-async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String> {
+async fn get_settings(app: AppHandle, state: State<'_, AppState>) -> Result<SettingsView, String> {
     let config = state.config.lock().unwrap().clone();
     let signed_in = auth::is_signed_in(&config);
-    Ok(SettingsView { config, signed_in, self_updating: is_appimage() })
+    Ok(SettingsView { config, signed_in, self_updating: is_appimage(), version: app.package_info().version.to_string() })
 }
 
 /// The settings page's Play button: plays the sound chosen in the list, saved or not
-/// ("Same as Bulwark" plays what Bulwark was last seen to use).
+/// ("Same as Bulwark" plays what Bulwark was last seen to use for mail).
 #[tauri::command]
 fn play_sound(state: State<'_, AppState>, sound: String) -> Result<(), String> {
     if !sound::is_valid_setting(&sound) {
         return Err(format!("Unknown notification sound \"{sound}\""));
     }
-    let bulwark = state.config.lock().unwrap().bulwark_sound.clone();
+    let bulwark = sound::remembered(&state.config.lock().unwrap(), sound::Kind::Mail).to_string();
     if let Some(s) = sound::resolve(&sound, &bulwark) {
         sound::play(s);
     }

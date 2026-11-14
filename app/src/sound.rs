@@ -50,13 +50,24 @@ static SOUNDS: [Sound; 5] = [
 
 /// The setting that turns the sound off. Any other value that is not an id also means off.
 pub const OFF: &str = "off";
-/// The setting "Same as Bulwark": the sound is whatever Bulwark was last seen to use
-/// (`Config::bulwark_sound`, reported by the viewer, see viewer_auth.rs).
+/// The setting "Same as Bulwark": the sound is whatever Bulwark was last seen to use, for mail
+/// and for reminders separately (`Config::bulwark_sound`, `Config::bulwark_reminder_sound`,
+/// reported by the viewer, see viewer_auth.rs).
 pub const BULWARK: &str = "bulwark";
 /// The default setting.
 pub const DEFAULT_SETTING: &str = BULWARK;
 /// What Bulwark plays when its user chose nothing; assumed until the webmail has reported.
 pub const BULWARK_DEFAULT: &str = "involved";
+/// What the remembered Bulwark values hold until the webmail has reported: "not seen yet", which
+/// is not the same as Bulwark being set to its default.
+pub const UNKNOWN: &str = "";
+
+/// Which kind of notification a sound is for. Bulwark has a sound switch for each.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    Mail,
+    Reminder,
+}
 
 /// Bulwark plays its files at this volume (`audio.volume = 0.3`).
 const FILE_VOLUME: f32 = 0.3;
@@ -81,15 +92,27 @@ pub fn is_valid_setting(value: &str) -> bool {
     value == BULWARK || is_choice(value)
 }
 
-/// The sound a setting means, given what Bulwark was last seen to use. None is silence.
+/// The sound a setting means, given what Bulwark was last seen to use for this kind of
+/// notification (`UNKNOWN` if never). None is silence.
 pub fn resolve(setting: &str, bulwark: &str) -> Option<&'static Sound> {
+    let bulwark = if bulwark == UNKNOWN { BULWARK_DEFAULT } else { bulwark };
     find(if setting == BULWARK { bulwark } else { setting })
+}
+
+/// What Bulwark was last seen to use for this kind of notification.
+pub fn remembered(config: &crate::config::Config, kind: Kind) -> &str {
+    match kind {
+        Kind::Mail => &config.bulwark_sound,
+        // A config from before reminders were reported separately knows only the mail value.
+        Kind::Reminder if config.bulwark_reminder_sound == UNKNOWN => &config.bulwark_sound,
+        Kind::Reminder => &config.bulwark_reminder_sound,
+    }
 }
 
 /// A notification is being shown: play the chosen sound, unless the webmail window is in use.
 /// Never waits for the audio.
-pub fn notify(app: &AppHandle) {
-    let Some(sound) = chosen(app) else { return };
+pub fn notify(app: &AppHandle, kind: Kind) {
+    let Some(sound) = chosen(app, kind) else { return };
     // The one place for this rule: Bulwark plays its own sound in an open window, and two at
     // once is wrong. A viewer kept alive hidden (keep_viewer_secs) is a closed window to the
     // user, so only a visible one counts. If the state can't be read, play: a missed
@@ -101,11 +124,11 @@ pub fn notify(app: &AppHandle) {
     play(sound);
 }
 
-/// The sound the saved settings mean right now.
-pub fn chosen(app: &AppHandle) -> Option<&'static Sound> {
+/// The sound the saved settings mean right now for this kind of notification.
+pub fn chosen(app: &AppHandle, kind: Kind) -> Option<&'static Sound> {
     let state = app.state::<crate::AppState>();
     let config = state.config.lock().unwrap();
-    resolve(&config.notification_sound, &config.bulwark_sound)
+    resolve(&config.notification_sound, remembered(&config, kind))
 }
 
 /// Plays one sound now (the settings page's Play button), whatever the window state.
@@ -251,10 +274,28 @@ mod tests {
         assert_eq!(resolve(BULWARK, "default").map(|s| s.id), Some("default"));
         assert!(resolve(BULWARK, "off").is_none());
         assert!(resolve(BULWARK, "garbage").is_none());
+        // Never reported: Bulwark's own default, for an explicit choice nothing changes.
+        assert_eq!(resolve(BULWARK, UNKNOWN).map(|s| s.id), Some(BULWARK_DEFAULT));
+        assert_eq!(resolve("swift", UNKNOWN).map(|s| s.id), Some("swift"));
+        assert!(resolve("off", UNKNOWN).is_none());
         // An explicit choice ignores Bulwark's.
         assert_eq!(resolve("swift", "off").map(|s| s.id), Some("swift"));
         assert!(resolve("off", "cheerful").is_none());
         assert!(find(BULWARK_DEFAULT).is_some());
+    }
+
+    #[test]
+    fn mail_and_reminders_are_remembered_separately() {
+        let c = crate::config::Config {
+            bulwark_sound: "cheerful".into(),
+            bulwark_reminder_sound: "off".into(),
+            ..Default::default()
+        };
+        assert_eq!(resolve(BULWARK, remembered(&c, Kind::Mail)).map(|s| s.id), Some("cheerful"));
+        assert!(resolve(BULWARK, remembered(&c, Kind::Reminder)).is_none());
+        // An explicit choice applies to both.
+        assert_eq!(resolve("swift", remembered(&c, Kind::Reminder)).map(|s| s.id), Some("swift"));
+        assert_eq!(remembered(&crate::config::Config::default(), Kind::Reminder), UNKNOWN);
     }
 
     #[test]

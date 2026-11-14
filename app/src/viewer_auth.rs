@@ -20,8 +20,8 @@
 //! The tray never sees a password or a Bulwark token, only the one-time code, which is useless
 //! without the page's verifier.
 //!
-//! The same script also tells the tray which notification sound Bulwark is set to (one more
-//! command, `viewer_sound_choice`), so Postern's own sound can follow it.
+//! The same script also tells the tray which notification sound Bulwark is set to, for mail and
+//! for reminders (one more command, `viewer_sound_choice`), so Postern's own sound can follow it.
 //!
 //! The capability that lets the viewer reach these commands
 //! (and nothing else) is added at runtime for the configured Bulwark origin only, and each
@@ -68,8 +68,13 @@ const MIN_SOUND_WRITE_INTERVAL: Duration = Duration::from_secs(5);
 /// (seen 2026-11-14: Bulwark checks each managed plugin bundle this way, and the window went
 /// blank on every load). Refusing those calls makes the page use its own JavaScript verifier,
 /// which is what it does in any browser without Ed25519. Short messages stay native.
-const WEBKIT_ED25519_GUARD: &str = if cfg!(target_os = "linux") {
-    r#"try {
+///
+/// Registered for all frames (a plugin runs in a sandboxed iframe whose origin is "null"), with
+/// no origin check: it only refuses, so it is harmless anywhere. Workers get no initialization
+/// script from the webview, so a verify inside a worker is not covered.
+#[cfg(target_os = "linux")]
+pub const WEBKIT_ED25519_GUARD: &str = r#"(() => {
+  try {
     const S = window.SubtleCrypto && SubtleCrypto.prototype;
     const big = (alg, data) => String(typeof alg === "string" ? alg : alg && alg.name).toLowerCase() === "ed25519"
       && ((data && data.byteLength) || 0) > 32768;
@@ -79,16 +84,17 @@ const WEBKIT_ED25519_GUARD: &str = if cfg!(target_os = "linux") {
       S.verify = function (alg, key, signature, data) { return big(alg, data) ? refuse() : verify.apply(this, arguments); };
       S.sign = function (alg, key, data) { return big(alg, data) ? refuse() : sign.apply(this, arguments); };
     }
-  } catch (_) {}"#
-} else {
-    ""
-};
+  } catch (_) {}
+})();"#;
 
-/// Reports Bulwark's notification sound to `viewer_sound_choice`. Bulwark keeps its settings in
-/// localStorage["settings-storage"] (a zustand persist blob: {"state": {...}, "version": N});
-/// the choice is state.notificationSoundChoice (its default, when the key is absent, is
-/// "involved") and state.emailNotificationSound === false is its switch for the new-mail sound
-/// (default on). The store may be written a little after the document starts and the page
+/// Reports Bulwark's notification sounds to `viewer_sound_choice`. Bulwark keeps its settings in
+/// localStorage["settings-storage"] (a zustand persist blob: {"state": {...}, "version": N}):
+/// state.notificationSoundChoice is the sound (its default, when the key is absent, is
+/// "involved"), state.emailNotificationSound and state.calendarNotificationSound === false are
+/// its switches for the new-mail and the reminder sound (default on), and
+/// state.doNotDisturb === true silences both (a plain boolean there; the desktop app's own
+/// quiet hours are not in this store and are not followed). Reported are the two results,
+/// "off" or the sound. The store may be written a little after the document starts and the page
 /// can change it while open, so it is read shortly after load, then every 30 s and when the
 /// page is hidden or left, and only sent when it differs from what was last accepted.
 /// A shape not understood reports nothing.
@@ -101,16 +107,21 @@ const SOUND_REPORT: &str = r#"try {
         const raw = localStorage.getItem("settings-storage");
         const s = raw && JSON.parse(raw).state;
         if (!s || typeof s !== "object") return null;
-        if (s.emailNotificationSound === false) return "off";
-        if (s.notificationSoundChoice === undefined) return "involved";
-        return IDS.includes(s.notificationSoundChoice) ? s.notificationSoundChoice : null;
+        const choice = s.notificationSoundChoice === undefined ? "involved"
+          : IDS.includes(s.notificationSoundChoice) ? s.notificationSoundChoice : null;
+        const dnd = s.doNotDisturb === true;
+        const mail = dnd || s.emailNotificationSound === false ? "off" : choice;
+        const reminders = dnd || s.calendarNotificationSound === false ? "off" : choice;
+        return mail === null || reminders === null ? null : { mail, reminders };
       } catch (_) { return null; }
     };
     const report = () => {
-      const choice = read();
-      if (choice === null || choice === last) return;
+      const sounds = read();
+      if (sounds === null) return;
+      const key = sounds.mail + "/" + sounds.reminders;
+      if (key === last) return;
       try {
-        T.invoke("viewer_sound_choice", { choice }).then((r) => { if (r && r.ok) last = choice; }, () => {});
+        T.invoke("viewer_sound_choice", sounds).then((r) => { if (r && r.ok) last = key; }, () => {});
       } catch (_) {}
     };
     if (T) {
@@ -140,7 +151,6 @@ pub fn init_script(origin: &str) -> String {
   // happen in the browser this window opens, not in here: the flag Bulwark's own loop guard
   // checks keeps this window on its login page, with "Sign in with your browser".
   try {{ sessionStorage.setItem("sso_attempted", "1"); }} catch (_) {{}}
-  {WEBKIT_ED25519_GUARD}
   {SOUND_REPORT}
   if (window.bulwarkDesktop || !window.__TAURI_INTERNALS__) return;
   const call = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {{}})
@@ -338,8 +348,8 @@ pub fn viewer_sign_in_cancel(app: AppHandle, webview: Webview, flow_id: String) 
     }
 }
 
-/// What to do with a sound the page reported, given the one on file and how long ago the config
-/// was last changed by such a report.
+/// What to do with the sounds the page reported, given the ones on file and how long ago the
+/// config was last changed by such a report.
 #[derive(Debug, PartialEq)]
 enum Report {
     Invalid,
@@ -348,8 +358,8 @@ enum Report {
     Write,
 }
 
-fn judge_report(current: &str, reported: &str, since_last_write: Option<Duration>) -> Report {
-    if !crate::sound::is_choice(reported) {
+fn judge_report(current: [&str; 2], reported: [&str; 2], since_last_write: Option<Duration>) -> Report {
+    if !reported.iter().all(|r| crate::sound::is_choice(r)) {
         Report::Invalid
     } else if reported == current {
         Report::Unchanged
@@ -360,28 +370,31 @@ fn judge_report(current: &str, reported: &str, since_last_write: Option<Duration
     }
 }
 
-/// The sound Bulwark is set to: "off" or one of its ids. Changes only `bulwark_sound`.
+/// The sounds Bulwark is set to, for new mail and for reminders: each "off" or one of its ids.
+/// Changes only `bulwark_sound` and `bulwark_reminder_sound`.
 #[tauri::command]
-pub fn viewer_sound_choice(app: AppHandle, webview: Webview, choice: String) -> Value {
+pub fn viewer_sound_choice(app: AppHandle, webview: Webview, mail: String, reminders: String) -> Value {
     if check_caller(&app, &webview).is_err() {
         return fail("invalid");
     }
     let state = app.state::<AppState>();
     let mut config = state.config.lock().unwrap();
     let mut last = LAST_SOUND_WRITE.lock().unwrap();
-    match judge_report(&config.bulwark_sound, &choice, last.map(|t| t.elapsed())) {
+    let current = [config.bulwark_sound.as_str(), config.bulwark_reminder_sound.as_str()];
+    match judge_report(current, [&mail, &reminders], last.map(|t| t.elapsed())) {
         Report::Invalid => return fail("invalid"),
         Report::Unchanged => return json!({ "ok": true }),
         Report::Busy => return fail("busy"),
         Report::Write => {}
     }
     let mut next = config.clone();
-    next.bulwark_sound = choice;
+    next.bulwark_sound = mail;
+    next.bulwark_reminder_sound = reminders;
     if let Err(e) = crate::config::save(&app, &next) {
         crate::log(&format!("viewer sound: could not save: {e}"));
         return fail("save");
     }
-    crate::log(&format!("viewer sound: Bulwark is set to {}", next.bulwark_sound));
+    crate::log(&format!("viewer sound: Bulwark is set to {} for mail, {} for reminders", next.bulwark_sound, next.bulwark_reminder_sound));
     *config = next;
     *last = Some(Instant::now());
     json!({ "ok": true })
@@ -392,14 +405,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_reported_sound_is_judged() {
+    fn reported_sounds_are_judged() {
         let s = |n| Some(Duration::from_secs(n));
-        assert_eq!(judge_report("involved", "cheerful", None), Report::Write);
-        assert_eq!(judge_report("involved", "off", s(60)), Report::Write);
-        assert_eq!(judge_report("involved", "cheerful", s(1)), Report::Busy);
-        assert_eq!(judge_report("involved", "involved", s(1)), Report::Unchanged);
+        let cur = ["involved", "involved"];
+        assert_eq!(judge_report(cur, ["cheerful", "cheerful"], None), Report::Write);
+        assert_eq!(judge_report(cur, ["involved", "off"], s(60)), Report::Write); // one of the two differs
+        assert_eq!(judge_report(["", ""], ["involved", "involved"], None), Report::Write); // first report
+        assert_eq!(judge_report(cur, ["cheerful", "off"], s(1)), Report::Busy);
+        assert_eq!(judge_report(cur, ["involved", "involved"], s(1)), Report::Unchanged);
         for bad in ["bulwark", "", "Cheerful", "loud", "off "] {
-            assert_eq!(judge_report("involved", bad, None), Report::Invalid, "{bad}");
+            assert_eq!(judge_report(cur, [bad, "off"], None), Report::Invalid, "{bad}");
+            assert_eq!(judge_report(cur, ["off", bad], None), Report::Invalid, "{bad}");
         }
     }
 
