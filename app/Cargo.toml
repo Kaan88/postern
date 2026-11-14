@@ -1,6 +1,6 @@
 [package]
 name = "postern"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 description = "Postern: a light tray companion for Bulwark Mail on Stalwart"
 license = "MIT"
@@ -31,6 +31,8 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "h
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 crypto_box = { version = "0.9", features = ["std"] }
+# Notification sounds (src/sound.rs): only the output device and the MP3 decoder.
+rodio = { version = "0.23", default-features = false, features = ["playback", "mp3"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] }

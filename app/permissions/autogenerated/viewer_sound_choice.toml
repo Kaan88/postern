@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-viewer-sound-choice"
+description = "Enables the viewer_sound_choice command without any pre-configured scope."
+commands.allow = ["viewer_sound_choice"]
+
+[[permission]]
+identifier = "deny-viewer-sound-choice"
+description = "Denies the viewer_sound_choice command without any pre-configured scope."
+commands.deny = ["viewer_sound_choice"]

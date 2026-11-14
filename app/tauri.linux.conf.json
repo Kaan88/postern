@@ -8,9 +8,17 @@
     "linux": {
       "deb": {
         "section": "mail",
+        "depends": [
+          "libasound2",
+          "gstreamer1.0-plugins-base",
+          "gstreamer1.0-plugins-good"
+        ],
         "desktopTemplate": "installer/postern.desktop"
       },
       "rpm": {
+        "depends": [
+          "libasound.so.2()(64bit)"
+        ],
         "desktopTemplate": "installer/postern.desktop"
       },
       "appimage": {

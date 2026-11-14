@@ -3,5 +3,5 @@
   "identifier": "settings",
   "description": "The local settings window. The Bulwark viewer's remote pages get nothing from here.",
   "windows": ["settings"],
-  "permissions": ["allow-get-settings", "allow-save-settings", "allow-sign-in", "allow-sign-out"]
+  "permissions": ["allow-get-settings", "allow-save-settings", "allow-sign-in", "allow-sign-out", "allow-play-sound"]
 }

@@ -10,6 +10,7 @@ mod auth;
 mod calendar;
 mod config;
 mod notify;
+mod sound;
 mod tray;
 #[cfg(target_os = "linux")]
 mod tray_linux;
@@ -71,6 +72,7 @@ struct SettingsInput {
     viewer_url: String,
     notifications: bool,
     calendar_alerts: bool,
+    notification_sound: String,
     keep_viewer_secs: u64,
     auto_update: bool,
     access_browser_signin: bool,
@@ -99,9 +101,26 @@ async fn get_settings(state: State<'_, AppState>) -> Result<SettingsView, String
     Ok(SettingsView { config, signed_in, self_updating: is_appimage() })
 }
 
+/// The settings page's Play button: plays the sound chosen in the list, saved or not
+/// ("Same as Bulwark" plays what Bulwark was last seen to use).
+#[tauri::command]
+fn play_sound(state: State<'_, AppState>, sound: String) -> Result<(), String> {
+    if !sound::is_valid_setting(&sound) {
+        return Err(format!("Unknown notification sound \"{sound}\""));
+    }
+    let bulwark = state.config.lock().unwrap().bulwark_sound.clone();
+    if let Some(s) = sound::resolve(&sound, &bulwark) {
+        sound::play(s);
+    }
+    Ok(())
+}
+
 fn validate(input: &SettingsInput) -> Result<(), String> {
     auth::secure_url(&input.jmap_url).map_err(|e| format!("Mail server URL {e}"))?;
     auth::secure_url(&input.viewer_url).map_err(|e| format!("Webmail URL {e}"))?;
+    if !sound::is_valid_setting(&input.notification_sound) {
+        return Err(format!("Unknown notification sound \"{}\"", input.notification_sound));
+    }
     Ok(())
 }
 
@@ -118,6 +137,7 @@ async fn apply(app: &AppHandle, input: SettingsInput) -> Result<config::Config, 
         viewer_url: input.viewer_url.trim().to_string(),
         notifications: input.notifications,
         calendar_alerts: input.calendar_alerts,
+        notification_sound: input.notification_sound,
         keep_viewer_secs: input.keep_viewer_secs.min(3600),
         auto_update: input.auto_update,
         access_browser_signin: input.access_browser_signin,
@@ -232,9 +252,11 @@ fn main() {
             save_settings,
             sign_in,
             sign_out,
+            play_sound,
             viewer_auth::viewer_sign_in_begin,
             viewer_auth::viewer_sign_in_complete,
             viewer_auth::viewer_sign_in_cancel,
+            viewer_auth::viewer_sound_choice,
             access::access_use_window
         ])
         .setup(|app| {

@@ -19,7 +19,9 @@
   input[type=url], input[type=number] {
     width: 100%; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit;
   }
-  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  select { padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--field); color: var(--fg); font: inherit; }
+  .inline { display: flex; gap: 8px; align-items: center; }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .hint { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
   .check label { margin: 0; }
@@ -63,6 +65,21 @@
     <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
     <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
     <div class="hint">Sent by the mail server itself, so they arrive with the webmail closed. Needs calendar alarms enabled on the mail server.</div>
+    <label for="notification_sound">Notification sound</label>
+    <div class="inline">
+      <select id="notification_sound">
+        <option value="bulwark">Same as Bulwark</option>
+        <option value="off">Off</option>
+        <option value="default">Beep</option>
+        <option value="cheerful">Cheerful</option>
+        <option value="involved">Involved</option>
+        <option value="swift">Swift</option>
+        <option value="relax">Relax</option>
+      </select>
+      <button type="button" id="play_sound">Play</button>
+    </div>
+    <div class="hint" id="sound_hint"></div>
+    <div class="hint">The same sounds as Bulwark. Not played while the webmail window is open: Bulwark plays its own there.</div>
     <div class="check" id="auto_update_row" hidden><input id="auto_update" type="checkbox"><label for="auto_update">Install updates automatically (you restart to use them)</label></div>
   </fieldset>
   <div class="row">
@@ -80,6 +97,7 @@
       viewer_url: $("viewer_url").value.trim(),
       notifications: $("notifications").checked,
       calendar_alerts: $("calendar_alerts").checked,
+      notification_sound: $("notification_sound").value,
       auto_update: $("auto_update").checked,
       access_browser_signin: $("access_browser_signin").checked,
       keep_viewer_secs: Math.max(0, parseInt($("keep_viewer_secs").value || "0", 10)),
@@ -94,6 +112,11 @@
     for (const k of ["jmap_url", "viewer_url", "keep_viewer_secs"]) $(k).value = config[k] ?? "";
     $("notifications").checked = !!config.notifications;
     $("calendar_alerts").checked = !!config.calendar_alerts;
+    // A value this page doesn't list (an edited config.json) is shown as, and kept as, Off.
+    $("notification_sound").value = config.notification_sound;
+    if ($("notification_sound").selectedIndex < 0) $("notification_sound").value = "off";
+    bulwarkSound = config.bulwark_sound;
+    updateSound();
     $("auto_update").checked = !!config.auto_update;
     $("access_browser_signin").checked = !!config.access_browser_signin;
     $("auto_update_row").hidden = !self_updating; // AppImage only
@@ -119,6 +142,19 @@
     }
     return true;
   };
+  // What the webmail was last seen to use (Postern learns it while the webmail is open; until
+  // then it assumes Bulwark's own default).
+  let bulwarkSound = "involved";
+  const soundName = (id) => $("notification_sound").querySelector(`option[value="${id}"]`)?.textContent;
+  const updateSound = () => {
+    const choice = $("notification_sound").value;
+    const effective = choice === "bulwark" ? bulwarkSound : choice;
+    $("play_sound").disabled = effective === "off" || effective === "bulwark" || !soundName(effective);
+    $("sound_hint").textContent = choice !== "bulwark" ? "" : bulwarkSound === "off" ? "Bulwark's sound is off."
+      : `Bulwark is set to ${soundName(bulwarkSound) ?? "a sound this version doesn't know"}. Until the webmail has been opened once, Involved is assumed.`;
+  };
+  $("notification_sound").addEventListener("change", updateSound);
+  $("play_sound").addEventListener("click", () => invoke("play_sound", { sound: $("notification_sound").value }).catch((e) => msg(String(e), "err")));
   $("signin").addEventListener("click", async () => {
     if (!valid()) return;
     $("signin").disabled = true;

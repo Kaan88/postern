@@ -33,6 +33,12 @@ pub struct Config {
     pub notifications: bool,
     /// Show the server's calendar and task reminders (Stalwart DISPLAY alarms, JMAP CalendarAlert).
     pub calendar_alerts: bool,
+    /// The sound played with a notification: "bulwark" (the same as the webmail's own, see
+    /// `bulwark_sound`), "off", or one of Bulwark's (see sound.rs). Any other value counts as off.
+    pub notification_sound: String,
+    /// What the webmail was last seen to use: "off" or one of Bulwark's ids. Reported by the
+    /// viewer (viewer_auth.rs); not a setting of this app.
+    pub bulwark_sound: String,
     /// Keep the viewer alive (hidden) this many seconds after its window is closed, so a quick
     /// reopen is instant. 0 destroys it at once, which frees all WebView memory.
     pub keep_viewer_secs: u64,
@@ -55,6 +61,8 @@ impl Default for Config {
             viewer_url: String::new(),
             notifications: true,
             calendar_alerts: true,
+            notification_sound: crate::sound::DEFAULT_SETTING.to_string(),
+            bulwark_sound: crate::sound::BULWARK_DEFAULT.to_string(),
             keep_viewer_secs: 0,
             auto_update: true,
             access_browser_signin: false,
@@ -164,5 +172,31 @@ pub fn set_secret(name: &str, value: &str) -> Result<(), String> {
 pub fn delete_secret(name: &str) {
     if let Ok(e) = entry(name) {
         let _ = e.delete_credential();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sound_follows_bulwark_by_default_and_old_files_still_load() {
+        assert_eq!(Config::default().notification_sound, "bulwark");
+        assert_eq!(Config::default().bulwark_sound, "involved");
+        // A config.json from before the setting existed.
+        let old: Config = serde_json::from_str(r#"{"jmap_url":"https://m.example.com","notifications":false}"#).unwrap();
+        assert_eq!(old.notification_sound, "bulwark");
+        assert_eq!(old.bulwark_sound, "involved");
+        assert!(!old.notifications);
+        // An explicit choice from the first version of the setting is kept.
+        let explicit: Config = serde_json::from_str(r#"{"notification_sound":"swift"}"#).unwrap();
+        assert_eq!(explicit.notification_sound, "swift");
+        assert_eq!(explicit.bulwark_sound, "involved");
+    }
+
+    #[test]
+    fn an_unknown_sound_means_off() {
+        let c: Config = serde_json::from_str(r#"{"notification_sound":"klaxon"}"#).unwrap();
+        assert!(crate::sound::find(&c.notification_sound).is_none());
     }
 }

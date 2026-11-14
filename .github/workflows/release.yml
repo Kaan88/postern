@@ -73,7 +73,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential curl wget file patchelf \
             libssl-dev libxdo-dev libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev librsvg2-dev \
+            libayatana-appindicator3-dev librsvg2-dev libasound2-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-pulseaudio gstreamer1.0-alsa
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -131,6 +131,18 @@ jobs:
         with:
           path: out
           merge-multiple: true
+      # app/sounds are copies of Bulwark's notification sounds: say so if upstream has moved on.
+      # Only a reminder; it never fails the release, and an unreachable GitHub is just a warning.
+      - name: Check the notification sounds are current
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if out=$(bash app/scripts/sync-sounds.sh --check 2>&1); then
+            echo "$out"
+          else
+            echo "$out"
+            echo "::warning title=Notification sounds::app/sounds differs from Bulwark's, or could not be checked. Run 'bash app/scripts/sync-sounds.sh', review and commit (details in this step's log)."
+          fi
       # What the AppImage's updater reads (see tauri.linux.conf.json). It resolves through
       # releases/latest/download, so it only works once the draft is published.
       - name: Write latest.json
