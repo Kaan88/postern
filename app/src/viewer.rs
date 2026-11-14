@@ -49,6 +49,9 @@ fn open_outside(url: &Url) {
 /// chain has to stay in the window: its cookies must land here, and a callback that ends up in
 /// the browser finds no session. A link the user follows starts from a Bulwark page that has
 /// finished loading; a gateway's redirect arrives before one has.
+///
+/// The exception is Cloudflare Access with "sign in in my browser" on (see `access`): its login
+/// is not loaded at all; the browser signs in and the session is handed to the window.
 #[derive(Default)]
 struct Gate {
     /// A page of Bulwark (or its mail server) has finished loading since the last navigation to it.
@@ -57,18 +60,37 @@ struct Gate {
     gateway: bool,
 }
 
+/// What to do with a navigation.
+#[derive(Debug, PartialEq)]
+enum Nav {
+    Load,
+    /// Another site: the browser's.
+    Refuse,
+    /// The first hop of a gateway's redirect, to a login the browser could take over.
+    Login,
+}
+
 impl Gate {
-    /// Whether a navigation loads in the window. `home`: it goes to Bulwark or its mail server.
-    fn navigate(&mut self, home: bool, https: bool) -> bool {
+    /// `home`: it goes to Bulwark or its mail server. `login`: it goes to an Access login that
+    /// the browser may take over.
+    fn navigate(&mut self, home: bool, https: bool, login: bool) -> Nav {
         if home {
             *self = Gate::default();
-            return true;
+            return Nav::Load;
+        }
+        if https && login && !self.gateway && !self.settled {
+            return Nav::Login;
         }
         if https && (self.gateway || !self.settled) {
             self.gateway = true;
-            return true;
+            return Nav::Load;
         }
-        false
+        Nav::Refuse
+    }
+
+    /// The window does the login after all.
+    fn stay(&mut self) {
+        self.gateway = true;
     }
 
     /// A page finished loading (or failed to); `home` as above.
@@ -94,6 +116,7 @@ fn end_web_process(w: &tauri::WebviewWindow) {
 
 /// Closes the viewer for good (e.g. its URL changed: it must be rebuilt for the new origin).
 pub fn destroy(app: &AppHandle) {
+    crate::access::reset();
     if let Some(w) = app.get_webview_window(LABEL) {
         HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
         end_web_process(&w);
@@ -131,6 +154,10 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
     let server = Url::parse(app.state::<AppState>().config.lock().unwrap().jmap_url.trim()).ok().map(|u| u.origin());
     let gate = Arc::new(Mutex::new(Gate::default()));
     let loaded_gate = gate.clone();
+    // Where a browser sign-in resumes: the last page of Bulwark the window was sent to.
+    let resume: Arc<Mutex<Url>> = Arc::new(Mutex::new(url.clone()));
+    let nav_app = app.clone();
+    crate::access::reset();
     let (loaded_bulwark, loaded_server) = (bulwark.clone(), server.clone());
     crate::viewer_auth::grant(app);
     let window = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(url))
@@ -141,9 +168,30 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
             if to.scheme() == "about" {
                 return true;
             }
-            let home = to.origin() == bulwark || server.as_ref() == Some(&to.origin());
-            if gate.lock().unwrap().navigate(home, to.scheme() == "https") {
+            // The page that says the browser has the user (only while it does).
+            if crate::access::is_waiting_page(to) {
                 return true;
+            }
+            let home = to.origin() == bulwark || server.as_ref() == Some(&to.origin());
+            if to.origin() == bulwark {
+                *resume.lock().unwrap() = to.clone();
+            }
+            let login = if home { None } else { crate::access::login_target(&nav_app, to) };
+            // (`login` is only ever Some for a scheme `access` accepts: https, bar its test mock.)
+            let nav = gate.lock().unwrap().navigate(home, to.scheme() == "https" || login.is_some(), login.is_some());
+            match (nav, login) {
+                (Nav::Load, _) => return true,
+                (Nav::Login, Some(aud)) => {
+                    let back = resume.lock().unwrap().clone();
+                    match crate::access::begin(&nav_app, aud, back) {
+                        crate::access::Start::Handled => return false,
+                        crate::access::Start::InWindow => {
+                            gate.lock().unwrap().stay();
+                            return true;
+                        }
+                    }
+                }
+                _ => {}
             }
             open_outside(to);
             false
@@ -151,7 +199,11 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
         .on_page_load(move |_, payload| {
             if payload.event() == PageLoadEvent::Finished {
                 let at = payload.url().origin();
-                loaded_gate.lock().unwrap().loaded(at == loaded_bulwark || loaded_server.as_ref() == Some(&at));
+                let home = at == loaded_bulwark || loaded_server.as_ref() == Some(&at);
+                loaded_gate.lock().unwrap().loaded(home);
+                if at == loaded_bulwark {
+                    crate::access::signed_in();
+                }
             }
         })
         .on_new_window(move |to, _features| {
@@ -183,6 +235,10 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
             if let Some(w) = handle.get_webview_window(LABEL) {
                 crate::window_state::track(&w, false);
             }
+            return;
+        }
+        if matches!(event, WindowEvent::Destroyed) {
+            crate::access::reset(); // a browser sign-in for a window that is gone has nowhere to go
             return;
         }
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -222,6 +278,7 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
 /// Forgets everything the Bulwark window stored (cookies, Cloudflare Access sessions, local data)
 /// and starts it again from the sign-in page. For a login stuck on a stale or half-finished session.
 pub fn reset_session(app: &AppHandle) {
+    crate::access::reset();
     open(app, "");
     let app = app.clone();
     // Off the main thread: WebView2's browsing-data calls can deadlock there.
@@ -293,30 +350,52 @@ pub fn open_settings(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::Gate;
+    use super::{Gate, Nav};
 
     #[test]
     fn a_gateway_login_stays_in_the_window_and_links_do_not() {
         let mut g = Gate::default();
         // Opening Bulwark: the gateway redirects to its login, then to the identity provider.
-        assert!(g.navigate(true, true));
-        assert!(g.navigate(false, true));
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, false), Nav::Load);
         g.loaded(false); // the login page
-        assert!(g.navigate(false, true)); // on to the identity provider
-        assert!(g.navigate(true, true)); // and back
+        assert_eq!(g.navigate(false, true, false), Nav::Load); // on to the identity provider
+        assert_eq!(g.navigate(true, true, false), Nav::Load); // and back
         g.loaded(true);
         // From a loaded Bulwark page, another site is a link: the browser's.
-        assert!(!g.navigate(false, true));
-        assert!(!g.navigate(false, true));
+        assert_eq!(g.navigate(false, true, false), Nav::Refuse);
+        assert_eq!(g.navigate(false, true, false), Nav::Refuse);
         // A session that ran out: the next load of Bulwark is redirected again.
-        assert!(g.navigate(true, true));
-        assert!(g.navigate(false, true));
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, false), Nav::Load);
     }
 
     #[test]
     fn a_gateway_must_be_https() {
         let mut g = Gate::default();
-        assert!(g.navigate(true, true));
-        assert!(!g.navigate(false, false));
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, false, false), Nav::Refuse);
+        assert_eq!(g.navigate(false, false, true), Nav::Refuse);
+    }
+
+    #[test]
+    fn an_access_login_is_only_taken_over_on_the_first_hop() {
+        let mut g = Gate::default();
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, true), Nav::Login);
+        // A link from a settled page is still a link, even to a look-alike login.
+        g.loaded(true);
+        assert_eq!(g.navigate(false, true, true), Nav::Refuse);
+        // Mid-way through a login in the window nothing is taken over.
+        let mut g = Gate::default();
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, true), Nav::Load);
+        // The window chose to do the login itself.
+        let mut g = Gate::default();
+        assert_eq!(g.navigate(true, true, false), Nav::Load);
+        assert_eq!(g.navigate(false, true, true), Nav::Login);
+        g.stay();
+        assert_eq!(g.navigate(false, true, true), Nav::Load);
     }
 }

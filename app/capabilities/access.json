@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "access-waiting-page",
+  "description": "The viewer's own local page shown while Cloudflare Access signs in in the browser. Local pages only: no remote URL is listed, so the webmail origin cannot use it.",
+  "windows": ["viewer"],
+  "local": true,
+  "permissions": ["allow-access-use-window"]
+}

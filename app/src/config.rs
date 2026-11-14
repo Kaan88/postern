@@ -38,6 +38,9 @@ pub struct Config {
     pub keep_viewer_secs: u64,
     /// AppImage only: look for a new version daily and install it in the background.
     pub auto_update: bool,
+    /// Behind Cloudflare Access: sign in in the default browser and hand the session to the
+    /// window, instead of running Access's login in the window (see access.rs).
+    pub access_browser_signin: bool,
 }
 
 /// Also what fields missing from an older config.json fall back to.
@@ -54,6 +57,7 @@ impl Default for Config {
             calendar_alerts: true,
             keep_viewer_secs: 0,
             auto_update: true,
+            access_browser_signin: false,
         }
     }
 }

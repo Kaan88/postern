@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-access-use-window"
+description = "Enables the access_use_window command without any pre-configured scope."
+commands.allow = ["access_use_window"]
+
+[[permission]]
+identifier = "deny-access-use-window"
+description = "Denies the access_use_window command without any pre-configured scope."
+commands.deny = ["access_use_window"]

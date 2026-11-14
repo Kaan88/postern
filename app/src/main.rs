@@ -5,6 +5,7 @@
 
 #[cfg(target_os = "linux")]
 mod appimage;
+mod access;
 mod auth;
 mod calendar;
 mod config;
@@ -70,6 +71,7 @@ struct SettingsInput {
     calendar_alerts: bool,
     keep_viewer_secs: u64,
     auto_update: bool,
+    access_browser_signin: bool,
 }
 
 #[derive(Serialize)]
@@ -116,6 +118,7 @@ async fn apply(app: &AppHandle, input: SettingsInput) -> Result<config::Config, 
         calendar_alerts: input.calendar_alerts,
         keep_viewer_secs: input.keep_viewer_secs.min(3600),
         auto_update: input.auto_update,
+        access_browser_signin: input.access_browser_signin,
         ..current
     };
     if server_changed {
@@ -224,7 +227,8 @@ fn main() {
             sign_out,
             viewer_auth::viewer_sign_in_begin,
             viewer_auth::viewer_sign_in_complete,
-            viewer_auth::viewer_sign_in_cancel
+            viewer_auth::viewer_sign_in_cancel,
+            access::access_use_window
         ])
         .setup(|app| {
             let handle = app.handle().clone();

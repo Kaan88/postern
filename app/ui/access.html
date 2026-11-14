@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Postern</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1f; --muted: #6b6b76; --line: #d9d9e0; --field: #f6f6f9; --accent: #2563eb; color-scheme: light; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b20; --fg: #ececf1; --muted: #9a9aa6; --line: #34343c; --field: #24242b; --accent: #5b8cff; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, "Segoe UI", sans-serif; }
+  main { max-width: 420px; text-align: center; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { margin: 0 0 18px; color: var(--muted); }
+  button { padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--field); color: var(--fg); font: inherit; cursor: pointer; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Finish signing in in your browser…</h1>
+  <p>Postern opened your browser to sign in to <b id="host">your webmail</b>. This window carries on by itself when you are done.</p>
+  <button type="button" id="here">Sign in in this window instead</button>
+</main>
+<script>
+  const host = new URLSearchParams(location.search).get("host");
+  if (host) document.getElementById("host").textContent = host;
+  document.getElementById("here").addEventListener("click", () => {
+    window.__TAURI_INTERNALS__.invoke("access_use_window").catch(() => {});
+  });
+</script>
+</body>
+</html>

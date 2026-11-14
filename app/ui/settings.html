@@ -58,6 +58,8 @@
     <label for="keep_viewer_secs">Keep the window in memory after closing (seconds)</label>
     <input id="keep_viewer_secs" type="number" min="0" max="3600" step="1">
     <div class="hint">0 frees all its memory at once; a few minutes makes a quick reopen instant.</div>
+    <div class="check"><input id="access_browser_signin" type="checkbox"><label for="access_browser_signin">Sign in to Cloudflare Access in my browser</label></div>
+    <div class="hint">If your webmail sits behind Cloudflare Access, its login opens in your default browser (where your Google session, passkeys and password manager are) instead of in this window.</div>
     <div class="check"><input id="notifications" type="checkbox"><label for="notifications">Notify me about new mail</label></div>
     <div class="check"><input id="calendar_alerts" type="checkbox"><label for="calendar_alerts">Show calendar and task reminders</label></div>
     <div class="hint">Sent by the mail server itself, so they arrive with the webmail closed. Needs calendar alarms enabled on the mail server.</div>
@@ -79,6 +81,7 @@
       notifications: $("notifications").checked,
       calendar_alerts: $("calendar_alerts").checked,
       auto_update: $("auto_update").checked,
+      access_browser_signin: $("access_browser_signin").checked,
       keep_viewer_secs: Math.max(0, parseInt($("keep_viewer_secs").value || "0", 10)),
     },
   });
@@ -92,6 +95,7 @@
     $("notifications").checked = !!config.notifications;
     $("calendar_alerts").checked = !!config.calendar_alerts;
     $("auto_update").checked = !!config.auto_update;
+    $("access_browser_signin").checked = !!config.access_browser_signin;
     $("auto_update_row").hidden = !self_updating; // AppImage only
     showAccount(signed_in, config.username);
   }).catch((e) => msg(String(e), "err"));

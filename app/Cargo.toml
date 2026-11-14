@@ -27,6 +27,7 @@ futures-util = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+crypto_box = { version = "0.9", features = ["std"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] }
