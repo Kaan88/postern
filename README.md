@@ -97,7 +97,7 @@ Technical notes are in [app/README.md](app/README.md), and the design background
 
 ## Audit
 
-Postern 0.2.0 was reviewed before release by Fable (Anthropic's Claude Fable 5.2): two passes covering correctness, security, reliability and performance. Every finding was fixed or is listed as a known limitation in the [technical notes](app/README.md).
+Postern 0.2.0 was reviewed before release by Fable (Anthropic's Claude Fable 5.2): two passes covering correctness, security, reliability and performance. Everything added since then, up to 0.3.1 (the Linux version, the AppImage's self-update and the Cloudflare Access sign-in), was reviewed again by Fable with security first. That review led to three fixes: notification text from mail is no longer treated as markup, a Postern started by another AppImage no longer mistakes that program's file for its own, and only release builds are signed for the updater. Every finding was fixed or is listed as a known limitation in the [technical notes](app/README.md).
 
 ## License
 

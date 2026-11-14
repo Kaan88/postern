@@ -78,6 +78,7 @@ Verified on Windows 11 with WebView2 157:
 Not yet verified:
 - the MSI and the ARM64 builds; notifications under the installed shortcut's name;
 - renewing the access token mid-session when it expires (renewal at start-up works);
+- Cloudflare Access sign-in in the browser on Windows (built and unit-tested; run only on Linux), and what an open page does when the Access session expires mid-use;
 - clicking a toast to open the message or event;
 - tray menu clicks;
 - acknowledging a reminder back to the server (not implemented, so Bulwark may show it again if it's open);
