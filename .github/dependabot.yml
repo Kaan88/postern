@@ -1,0 +1,20 @@
+# Dependabot opens pull requests only: nothing is merged on its own. Minor and patch updates
+# come in one grouped pull request a week per ecosystem; each major update comes on its own.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/app"
+    schedule: {interval: weekly, day: monday}
+    open-pull-requests-limit: 5
+    commit-message: {prefix: deps}
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directories: ["/"]
+    schedule: {interval: weekly, day: monday}
+    open-pull-requests-limit: 5
+    commit-message: {prefix: ci}
+    groups:
+      actions:
+        patterns: ["*"]
