@@ -308,9 +308,34 @@ pub fn open_mailto(app: &AppHandle, mailto: &str) {
 
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn open_message(app: &AppHandle, email_id: &str) {
+    let login = {
+        let state = app.state::<AppState>();
+        let config = state.config.lock().unwrap();
+        bulwark_login_id(&config.username, &config.jmap_url)
+    };
+    open(app, &message_path(email_id, login.as_deref()));
+}
+
+/// Bulwark's id for a login (`generateAccountId`): `<username>@<JMAP server hostname>`.
+fn bulwark_login_id(username: &str, jmap_url: &str) -> Option<String> {
+    let username = username.trim();
+    let host = Url::parse(jmap_url.trim()).ok()?.host_str()?.to_owned();
+    (!username.is_empty()).then(|| format!("{username}@{host}"))
+}
+
+/// `mail/message/<id>?account=<login>`. With several logins signed in, Bulwark opens a message
+/// link from the address bar only when it names its login: ids repeat across accounts.
+fn message_path(email_id: &str, login: Option<&str>) -> String {
     let mut u = Url::parse("http://x/mail/message/").expect("static url");
     u.path_segments_mut().expect("base").pop_if_empty().push(email_id);
-    open(app, u.path().trim_start_matches('/'));
+    if let Some(login) = login {
+        u.query_pairs_mut().append_pair("account", login);
+    }
+    let path = u.path().trim_start_matches('/');
+    match u.query() {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_owned(),
+    }
 }
 
 /// A calendar alert: the event itself, or the task list for a task.
@@ -357,7 +382,7 @@ pub fn open_settings(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Gate, Nav};
+    use super::{bulwark_login_id, message_path, Gate, Nav};
 
     #[test]
     fn a_gateway_login_stays_in_the_window_and_links_do_not() {
@@ -404,5 +429,15 @@ mod tests {
         assert_eq!(g.navigate(false, true, true), Nav::Login);
         g.stay();
         assert_eq!(g.navigate(false, true, true), Nav::Load);
+    }
+
+    #[test]
+    fn message_link_names_its_login() {
+        let login = bulwark_login_id(" a@example.com ", "https://Mail.Example.com:8443/jmap").unwrap();
+        assert_eq!(login, "a@example.com@mail.example.com");
+        assert_eq!(message_path("M1/x", Some(&login)), "mail/message/M1%2Fx?account=a%40example.com%40mail.example.com");
+        assert_eq!(message_path("M1", None), "mail/message/M1");
+        assert_eq!(bulwark_login_id("", "https://mail.example.com"), None);
+        assert_eq!(bulwark_login_id("a", "not a url"), None);
     }
 }
