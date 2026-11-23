@@ -20,7 +20,7 @@ tauri-plugin-autostart = "2"
 tauri-plugin-opener = "2"
 url = "2"
 sha2 = "0.10"
-base64 = "0.22"
+base64 = "0.23"
 getrandom = "0.3"
 jmap-client = "0.4"
 serde = { version = "1", features = ["derive"] }
