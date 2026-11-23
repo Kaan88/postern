@@ -17,6 +17,12 @@ pub const LABEL: &str = "viewer";
 /// Bumped whenever the viewer is shown again, so a pending delayed destroy knows to stand down.
 static HIDE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
+/// A message a toast click asked for while Bulwark was loading: opened once its page is in.
+static PENDING_MESSAGE: Mutex<Option<String>> = Mutex::new(None);
+
+/// How long the mail list is watched for a toast's message before its link is loaded instead.
+const ROW_WAIT_MS: u64 = 15_000;
+
 fn target_url(app: &AppHandle, path: &str) -> Result<Url, String> {
     let viewer_url = app.state::<AppState>().config.lock().unwrap().viewer_url.clone();
     let mut s = viewer_url.trim().to_string();
@@ -200,13 +206,19 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
             open_outside(to);
             false
         })
-        .on_page_load(move |_, payload| {
+        .on_page_load(move |webview, payload| {
             if payload.event() == PageLoadEvent::Finished {
                 let at = payload.url().origin();
                 let home = at == loaded_bulwark || loaded_server.as_ref() == Some(&at);
                 loaded_gate.lock().unwrap().loaded(home);
                 if at == loaded_bulwark {
                     crate::access::signed_in();
+                    let pending = PENDING_MESSAGE.lock().unwrap().take();
+                    if let Some(script) = pending {
+                        if let Err(e) = webview.eval(&script) {
+                            crate::log(&format!("viewer: could not open the message: {e}"));
+                        }
+                    }
                 }
             }
         })
@@ -243,6 +255,7 @@ fn try_open(app: &AppHandle, path: &str) -> Result<(), String> {
         }
         if matches!(event, WindowEvent::Destroyed) {
             crate::access::reset(); // a browser sign-in for a window that is gone has nowhere to go
+            *PENDING_MESSAGE.lock().unwrap() = None;
             return;
         }
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -306,6 +319,11 @@ pub fn open_mailto(app: &AppHandle, mailto: &str) {
     open(app, &format!("protocol/mailto?{}", path.query().unwrap_or_default()));
 }
 
+/// A new-mail toast's click. Its message has only just arrived, and Bulwark reads a message
+/// link once, when its page loads: loaded before Bulwark has fetched that mail, the link said
+/// "This message is no longer available". So the mail list is shown, and the message is opened
+/// from its row once Bulwark lists it (a click in the page, no reload); its link is loaded only
+/// if no row comes (another folder, a filter), when Bulwark has had time to fetch it.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub fn open_message(app: &AppHandle, email_id: &str) {
     let login = {
@@ -313,7 +331,64 @@ pub fn open_message(app: &AppHandle, email_id: &str) {
         let config = state.config.lock().unwrap();
         bulwark_login_id(&config.username, &config.jmap_url)
     };
-    open(app, &message_path(email_id, login.as_deref()));
+    let path = message_path(email_id, login.as_deref());
+    let link = match target_url(app, &path) {
+        Ok(link) => link,
+        Err(_) => return open(app, &path), // reports the missing URL as before
+    };
+    let script = open_from_list_script(email_id, link.as_str());
+    if let Some(window) = app.get_webview_window(LABEL) {
+        let base = target_url(app, "").ok();
+        let on_mail = window.url().ok().zip(base).is_some_and(|(at, base)| shows_mail(&at, &base));
+        if on_mail {
+            HIDE_GENERATION.fetch_add(1, Ordering::SeqCst);
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+            if let Err(e) = window.eval(&script) {
+                crate::log(&format!("viewer: could not open the message: {e}"));
+                open(app, &path);
+            }
+            return;
+        }
+    }
+    *PENDING_MESSAGE.lock().unwrap() = Some(script);
+    open(app, "mail");
+}
+
+/// Whether the viewer is on one of Bulwark's mail pages (`<base>mail…`), where the list is.
+fn shows_mail(at: &Url, base: &Url) -> bool {
+    at.origin() == base.origin()
+        && at.path().strip_prefix(base.path().trim_end_matches('/')).is_some_and(|rest| {
+            let rest = rest.trim_start_matches('/');
+            rest == "mail" || rest.starts_with("mail/")
+        })
+}
+
+/// Runs in Bulwark's page: clicks the message's row once the list has it, or after
+/// `ROW_WAIT_MS` without one loads its link. Stands down when the user clicks or types first.
+fn open_from_list_script(email_id: &str, link: &str) -> String {
+    let id = serde_json::to_string(email_id).unwrap_or_else(|_| "\"\"".into());
+    let link = serde_json::to_string(link).unwrap_or_else(|_| "\"\"".into());
+    format!(
+        r#"(() => {{
+  const id = {id}, link = {link};
+  const row = '[data-email-id="' + CSS.escape(id) + '"][data-subject]';
+  const until = Date.now() + {ROW_WAIT_MS};
+  let done = false;
+  const standDown = () => {{ done = true; }};
+  addEventListener("pointerdown", standDown, {{ once: true, capture: true }});
+  addEventListener("keydown", standDown, {{ once: true, capture: true }});
+  const tick = () => {{
+    if (done) return;
+    const el = document.querySelector(row);
+    if (el) {{ done = true; el.scrollIntoView({{ block: "nearest" }}); el.click(); return; }}
+    if (Date.now() > until) {{ done = true; location.assign(link); return; }}
+    setTimeout(tick, 300);
+  }};
+  tick();
+}})();"#
+    )
 }
 
 /// Bulwark's id for a login (`generateAccountId`): `<username>@<JMAP server hostname>`.
@@ -382,7 +457,31 @@ pub fn open_settings(app: &AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{bulwark_login_id, message_path, Gate, Nav};
+    use super::{bulwark_login_id, message_path, open_from_list_script, shows_mail, Gate, Nav};
+    use tauri::Url;
+
+    #[test]
+    fn the_list_is_used_only_on_bulwarks_mail_pages() {
+        let base = Url::parse("https://mail.example.com/").unwrap();
+        let at = |s: &str| Url::parse(s).unwrap();
+        assert!(shows_mail(&at("https://mail.example.com/mail"), &base));
+        assert!(shows_mail(&at("https://mail.example.com/mail/folder/inbox"), &base));
+        assert!(!shows_mail(&at("https://mail.example.com/calendar"), &base));
+        assert!(!shows_mail(&at("https://mail.example.com/mailbox"), &base));
+        assert!(!shows_mail(&at("https://other.example.com/mail"), &base));
+        // A sub-path deploy.
+        let sub = Url::parse("https://example.com/webmail/").unwrap();
+        assert!(shows_mail(&at("https://example.com/webmail/mail/message/M1"), &sub));
+        assert!(!shows_mail(&at("https://example.com/mail"), &sub));
+    }
+
+    #[test]
+    fn the_open_script_carries_the_id_and_link_as_strings() {
+        let s = open_from_list_script("M\"1</script>", "https://mail.example.com/mail/message/M1?account=a");
+        assert!(s.contains(r#"const id = "M\"1</script>""#));
+        assert!(s.contains(r#"link = "https://mail.example.com/mail/message/M1?account=a""#));
+        assert!(s.contains("data-email-id"));
+    }
 
     #[test]
     fn a_gateway_login_stays_in_the_window_and_links_do_not() {
