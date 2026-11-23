@@ -38,7 +38,7 @@ rodio = { version = "0.23", default-features = false, features = ["playback", "m
 tokio = { version = "1", features = ["rt", "macros", "net", "io-util"] }
 
 [target.'cfg(windows)'.dependencies]
-tauri-winrt-notification = "0.7"
+tauri-winrt-notification = "0.8"
 keyring = { version = "3", features = ["windows-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
