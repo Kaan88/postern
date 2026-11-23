@@ -133,6 +133,37 @@ const SOUND_REPORT: &str = r#"try {
     }
   } catch (_) {}"#;
 
+/// Bulwark asks for its plugin list (`GET /api/plugins`, plugins and server themes) once, as the
+/// page starts, and that needs a session the server can see. In a window opened more than an
+/// hour after the last one there is none yet: the per-slot context cookie lasted only as long as
+/// the old window, and the access token and admin session cookies are an hour long. Bulwark
+/// restores it (`POST /api/auth/stalwart-context`) about half a second after the list was
+/// refused, and nothing asks again until its Settings → Plugins page does, so every plugin stayed
+/// off (seen 2026-11-23). Here a 401 for the list waits for that restore (10 s at most) and the
+/// list is asked for once more; signed out for real, the page gets its 401, only later.
+const PLUGIN_LIST_RETRY: &str = r#"try {
+    const F = window.fetch;
+    let release;
+    const restored = new Promise((r) => { release = r; });
+    const at = (input) => {
+      try { return new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, location.href); }
+      catch (_) { return null; }
+    };
+    const method = (input, init) => String((init && init.method) || (input && input.method) || "GET").toUpperCase();
+    const ends = (u, path) => !!u && u.origin === location.origin && u.pathname.endsWith(path);
+    window.fetch = function (input, init) {
+      const u = at(input);
+      const answer = F.apply(this, arguments);
+      if (ends(u, "/api/auth/stalwart-context") && method(input, init) === "POST") {
+        answer.then((r) => { if (r.ok) release(); }, () => {});
+      }
+      if (!ends(u, "/api/plugins") || method(input, init) !== "GET") return answer;
+      return answer.then((r) => r.status !== 401 ? r
+        : Promise.race([restored.then(() => true), new Promise((t) => setTimeout(() => t(false), 10000))])
+            .then((again) => again ? F.call(window, input, init) : r));
+    };
+  } catch (_) {}"#;
+
 /// Runs in the viewer before Bulwark's own scripts, on every page load (main frame only), and
 /// does nothing on any origin but Bulwark's (`origin`, e.g. `https://webmail.example.com`).
 pub fn init_script(origin: &str) -> String {
@@ -151,6 +182,7 @@ pub fn init_script(origin: &str) -> String {
   // happen in the browser this window opens, not in here: the flag Bulwark's own loop guard
   // checks keeps this window on its login page, with "Sign in with your browser".
   try {{ sessionStorage.setItem("sso_attempted", "1"); }} catch (_) {{}}
+  {PLUGIN_LIST_RETRY}
   {SOUND_REPORT}
   if (window.bulwarkDesktop || !window.__TAURI_INTERNALS__) return;
   const call = (cmd, args) => window.__TAURI_INTERNALS__.invoke(cmd, args || {{}})
@@ -403,6 +435,15 @@ pub fn viewer_sound_choice(app: AppHandle, webview: Webview, mail: String, remin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_plugin_list_retry_runs_on_bulwark_only_and_before_its_scripts() {
+        let s = init_script("https://webmail.example.com");
+        let guard = s.find(r#"if (location.origin !== "https://webmail.example.com") return;"#).unwrap();
+        let retry = s.find("/api/plugins").unwrap();
+        assert!(guard < retry, "the fetch wrapper must sit behind the origin check");
+        assert!(s.contains("/api/auth/stalwart-context"));
+    }
 
     #[test]
     fn reported_sounds_are_judged() {
